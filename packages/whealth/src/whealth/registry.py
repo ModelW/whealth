@@ -7,11 +7,15 @@ import importlib
 import inspect
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 from django.apps import apps
 
-from whealth.base import BaseControl
+from whealth.base import BaseControl, Failure
+
+if TYPE_CHECKING:
+    from whealth.graph import DependencyNote
 
 
 @dataclasses.dataclass(frozen=True)
@@ -20,11 +24,61 @@ class ControlInfo:
 
     app_label: str
     slug: str
-    title: str
     module: str
     control_class: type[BaseControl]
     manifest: Manifest
     readme: str
+    title: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class Controller:
+    """Wraps a :class:`ControlInfo` with an instantiated control.
+
+    Proxies the :meth:`get_failures` call to the underlying control
+    instance.  Equality and hashing are based on ``(app_label, slug)``.
+    """
+
+    info: ControlInfo
+    _instance: BaseControl = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        """Instantiate the control class after frozen init."""
+        object.__setattr__(self, "_instance", self.info.control_class())
+
+    @property
+    def app_label(self) -> str:
+        """App label of the wrapped control."""
+        return self.info.app_label
+
+    @property
+    def slug(self) -> str:
+        """Slug of the wrapped control."""
+        return self.info.slug
+
+    @property
+    def title(self) -> str:
+        """Title of the wrapped control, falling back to slug."""
+        return self.info.title or self.info.slug
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """Tuple identifier ``(app_label, slug)``."""
+        return (self.info.app_label, self.info.slug)
+
+    def __hash__(self) -> int:
+        """Hash based on key."""
+        return hash(self.key)
+
+    def __eq__(self, other: object) -> bool:
+        """Equality based on key."""
+        if not isinstance(other, Controller):
+            return NotImplemented
+        return self.key == other.key
+
+    def get_failures(self) -> list[Failure]:
+        """Proxy to the underlying control instance."""
+        return self._instance.get_failures()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -209,11 +263,10 @@ def attempt_load(
     if readme is None:
         return f"Control {module!r} is missing README.md."
 
-    title = manifest.title or slug
     return ControlInfo(
         app_label=app_label,
         slug=slug,
-        title=title,
+        title=manifest.title,
         module=module,
         control_class=control_cls,
         manifest=manifest,
@@ -243,14 +296,88 @@ def list_controls(
     return results
 
 
+@dataclasses.dataclass(frozen=True)
+class DiscoveryResult:
+    """Outcome of a full discovery pass."""
+
+    errors: tuple[str, ...] = ()
+    notes: tuple[DependencyNote, ...] = ()
+
+
+@dataclasses.dataclass
 class ControlRegistry:
     """Registry that discovers and validates health controls.
 
-    For now this is an empty placeholder — the real logic lives in
-    module-level functions. This class exists so that a future version
-    can hold shared state (caches, config, etc.) while keeping a stable
-    public API via :func:`get_control_registry`.
+    Manages :class:`Controller` instances wrapping discovered controls.
     """
+
+    controllers: dict[tuple[str, str], Controller] = dataclasses.field(
+        default_factory=dict, init=False
+    )
+    discovery: DiscoveryResult | None = dataclasses.field(
+        default=None, init=False
+    )
+
+    def register(self, info: ControlInfo) -> Controller:
+        """Register a :class:`ControlInfo` and return its :class:`Controller`.
+
+        The controller wraps a fresh instance of the control class and
+        can be retrieved later via its ``key``.
+
+        Raises
+        ------
+        KeyError
+            If a controller with the same key is already registered.
+        """
+        controller = Controller(info=info)
+        if controller.key in self.controllers:
+            msg = f"Controller {controller.key!r} is already registered"
+            raise KeyError(msg)
+        self.controllers[controller.key] = controller
+        return controller
+
+    def get(self, app_label: str, slug: str) -> Controller | None:
+        """Retrieve a previously registered controller by its key."""
+        return self.controllers.get((app_label, slug))
+
+    def discover(
+        self,
+    ) -> tuple[list[str], list[DependencyNote]]:
+        """Discover, validate, and register all controls.
+
+        Scans every installed Django app for ``controls/`` directories,
+        loads valid controls, resolves their dependency graph, and
+        registers each resulting :class:`Controller`.
+
+        Returns
+        -------
+        tuple of (list[str], list[DependencyNote])
+            A tuple of:
+            - error messages from invalid controls or failed loads
+            - dependency notes from the graph resolution pass
+        """
+        from whealth.graph import resolve_dependencies
+
+        errors: list[str] = []
+        candidates = list_potential_controls()
+        loaded = list_controls(candidates)
+
+        valid: list[ControlInfo] = []
+        for r in loaded:
+            if isinstance(r, ControlInfo):
+                valid.append(r)
+            else:
+                errors.append(r)
+
+        safe_controls, notes = resolve_dependencies(valid)
+
+        for c in safe_controls:
+            self.register(c)
+
+        self.discovery = DiscoveryResult(
+            errors=tuple(errors), notes=tuple(notes)
+        )
+        return errors, notes
 
 
 _cr_lock = threading.Lock()

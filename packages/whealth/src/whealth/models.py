@@ -178,10 +178,13 @@ class Incident(models.Model):
         ),
         verbose_name=_("key"),
     )
-    context = models.TextField(
+    context = models.JSONField(
         blank=True,
-        default="",
-        help_text=_("Optional markdown context describing what happened."),
+        default=dict,
+        help_text=_(
+            "Opaque JSON-serializable value providing context about what "
+            "caused this incident."
+        ),
         verbose_name=_("context"),
     )
 

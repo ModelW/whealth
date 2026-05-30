@@ -8,12 +8,8 @@ from django.core.management.base import BaseCommand
 from django.utils.translation import gettext as _
 from django.utils.translation import ngettext
 
-from whealth.graph import DependencyIssue, resolve_dependencies
-from whealth.registry import (
-    ControlInfo,
-    list_controls,
-    list_potential_controls,
-)
+from whealth.graph import DependencyIssue
+from whealth.registry import get_control_registry
 
 
 class Command(BaseCommand):
@@ -21,29 +17,43 @@ class Command(BaseCommand):
 
     help = _("List all available health controls.")
 
-    def _print_controls(
-        self, results: list[ControlInfo | str]
-    ) -> list[ControlInfo]:
-        """Print valid controls and return them."""
-        style_good = self.style.SQL_FIELD
-        valid: list[ControlInfo] = []
-        for r in results:
-            if isinstance(r, ControlInfo):
-                valid.append(r)
-                self.stdout.write(
-                    f"  {style_good(r.title)} "
-                    f"({self.style.MIGRATE_LABEL(r.app_label)}."
-                    f"{self.style.MIGRATE_LABEL(r.slug)})"
-                )
-        return valid
+    def handle(self, *args: str, **options: str) -> str:
+        """Execute the command."""
+        registry = get_control_registry()
+        if registry.discovery is None:
+            msg = (
+                "Control discovery has not been run yet. "
+                "Make sure whealth.apps.WhealthConfig is in INSTALLED_APPS."
+            )
+            raise RuntimeError(msg)
 
-    def _check_section_ready(
-        self, results: list[ControlInfo | str]
-    ) -> bool:
-        """Check all valid vs invalid controls."""
-        rejected = [r for r in results if not isinstance(r, ControlInfo)]
-        if rejected:
-            count = len(rejected)
+        errors = list(registry.discovery.errors)
+        notes = list(registry.discovery.notes)
+
+        self.stdout.write(
+            self.style.SQL_FIELD(_("=== Valid controls ==="))
+        )
+
+        if not registry.controllers:
+            self.stdout.write(_("  (none)"))
+
+        for controller in registry.controllers.values():
+            self.stdout.write(
+                f"  {self.style.SQL_FIELD(controller.title)} "
+                f"({self.style.MIGRATE_LABEL(controller.app_label)}."
+                f"{self.style.MIGRATE_LABEL(controller.slug)})"
+            )
+
+        self.stdout.write("")
+        self.stdout.write(
+            self.style.SQL_FIELD(_("=== Checklist ==="))
+        )
+
+        has_issues = False
+
+        if errors:
+            has_issues = True
+            count = len(errors)
             self.stdout.write(
                 ngettext(
                     "  \u274c Detected %(count)d invalid control",
@@ -52,79 +62,45 @@ class Command(BaseCommand):
                 )
                 % {"count": count}
             )
-            for r in rejected:
-                self.stdout.write(f"    \u274c {r}")
-            return True
-        self.stdout.write(_("  \u2705 All detected controls are valid"))
-        return False
+            for e in errors:
+                self.stdout.write(f"    \u274c {e}")
+        else:
+            self.stdout.write(_("  \u2705 All detected controls are valid"))
 
-    def _check_section_deps(
-        self, valid_controls: list[ControlInfo]
-    ) -> bool:
-        """Check dependency consistency. Returns True if issues found."""
-        if not valid_controls:
+        if notes:
+            has_issues = True
+            count = len(notes)
+            msg = ngettext(
+                "  \u274c Found %(count)d problematic dependency",
+                "  \u274c Found %(count)d problematic dependencies",
+                count,
+            ) % {"count": count}
+            self.stdout.write(msg)
+            for n in notes:
+                ref = f"{n.control_app_label}.{n.control_slug}"
+                if n.reason == DependencyIssue.CYCLE:
+                    self.stdout.write(
+                        _(
+                            "    \u274c Removed dependency "
+                            "'%(dep)s' from '%(ref)s' "
+                            "(would create a loop)"
+                        )
+                        % {"dep": n.dependency_ref, "ref": ref}
+                    )
+                else:
+                    self.stdout.write(
+                        _(
+                            "    \u274c Dependency '%(dep)s' in "
+                            "'%(ref)s' points to an unknown control"
+                        )
+                        % {"dep": n.dependency_ref, "ref": ref}
+                    )
+        else:
             self.stdout.write(
                 _("  \u2705 Dependencies form a consistent graph")
             )
-            return False
-        _safe_controls, notes = resolve_dependencies(valid_controls)
-        if not notes:
-            self.stdout.write(
-                _("  \u2705 Dependencies form a consistent graph")
-            )
-            return False
 
-        count = len(notes)
-        msg = ngettext(
-            "  \u274c Found %(count)d problematic dependency",
-            "  \u274c Found %(count)d problematic dependencies",
-            count,
-        ) % {"count": count}
-        self.stdout.write(msg)
-        for n in notes:
-            ref = f"{n.control_app_label}.{n.control_slug}"
-            if n.reason == DependencyIssue.CYCLE:
-                self.stdout.write(
-                    _(
-                        "    \u274c Removed dependency "
-                        "'%(dep)s' from '%(ref)s' "
-                        "(would create a loop)"
-                    )
-                    % {"dep": n.dependency_ref, "ref": ref}
-                )
-            else:
-                self.stdout.write(
-                    _(
-                        "    \u274c Dependency '%(dep)s' in "
-                        "'%(ref)s' points to an unknown control"
-                    )
-                    % {"dep": n.dependency_ref, "ref": ref}
-                )
-        return True
-
-    def handle(self, *args: str, **options: str) -> str:
-        """Execute the command."""
-        candidates = list_potential_controls()
-        results = list_controls(candidates)
-
-        self.stdout.write(
-            self.style.SQL_FIELD(_("=== Valid controls ==="))
-        )
-
-        valid_controls = self._print_controls(results)
-
-        if not valid_controls:
-            self.stdout.write(_("  (none)"))
-
-        self.stdout.write("")
-        self.stdout.write(
-            self.style.SQL_FIELD(_("=== Checklist ==="))
-        )
-
-        has_ready = self._check_section_ready(results)
-        has_deps = self._check_section_deps(valid_controls)
-
-        if has_ready or has_deps:
+        if has_issues:
             sys.exit(1)
 
         return ""

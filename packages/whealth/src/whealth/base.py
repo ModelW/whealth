@@ -1,12 +1,84 @@
 """Base abstractions for health controls."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+type Outcome = Literal[
+    "warning",
+    "error",
+    "internal_error",
+]
+"""Result of a single control check.
+
+Controls only return non-OK outcomes because there is no need to
+store or transmit a positive result — the absence of a Failure
+already means success.
+
+Values
+------
+warning
+    The control is in a degraded but still-operational state.
+    Dependent checks should still run.
+error
+    The check has failed and dependent checks cannot rely on it.
+internal_error
+    The check itself is broken (e.g. an unhandled exception in the
+    control code).
+"""
+
+
+@dataclass(frozen=True)
+class RestartRemediation:
+    """Restart a specific component to fix the issue."""
+
+    components: list[str]
+
+
+@dataclass(frozen=True)
+class PyRemediation:
+    """Call a Python function to try and fix the issue."""
+
+    func: Callable[[], None]
+
+
+@dataclass(frozen=True)
+class SuggestionRemediation:
+    """Suggest a manual action to the admin to fix the issue."""
+
+    message: str
+
+
+type Remediation = RestartRemediation | PyRemediation | SuggestionRemediation
+
+
+@dataclass(frozen=True)
+class Failure:
+    """A single failure or warning produced by a control check.
+
+    This dataclass must remain trivially serializable so instances can be
+    stored in and reconstructed from the database.  No subclassing or
+    additional state is allowed beyond the defined fields.
+    """
+
+    key: str
+    outcome: Outcome
+    context: Any = None
+
+    def get_remediation(self) -> Remediation | None:
+        """Return a remediation for this failure, or None."""
+        return None
 
 
 class BaseControl(ABC):
     """Abstract base class for all health controls."""
 
     @abstractmethod
-    def check(self) -> Any:
-        """Run the control check and return the result."""
+    def get_failures(self) -> list[Failure]:
+        """Run the control check and return zero or more failures."""

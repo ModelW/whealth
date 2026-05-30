@@ -1,10 +1,11 @@
 """Database health control."""
 
-from whealth import BaseControl
+from whealth import BaseControl, Failure
 
 
 class Control(BaseControl):
     """Check that the database connection is healthy."""
 
-    def check(self) -> None:
+    def get_failures(self) -> list[Failure]:
         """Run the database health check."""
+        return []
