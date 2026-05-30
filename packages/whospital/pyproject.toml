@@ -1,0 +1,16 @@
+[project]
+name = "whospital"
+version = "0.1.0"
+description = "Django project depending on whealth"
+requires-python = ">=3.14"
+dependencies = [
+    "django>=5.0",
+    "whealth",
+]
+
+[build-system]
+requires = ["uv_build<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+whealth = { workspace = true }
