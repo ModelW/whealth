@@ -5,7 +5,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
-SECRET_KEY = "django-insecure-whospital-dev-key"
+SECRET_KEY = "django-insecure-whospital-dev-key"  # noqa: S105
 DEBUG = True
 ROOT_URLCONF = "whospital.urls"
 WSGI_APPLICATION = "whospital.wsgi.application"
@@ -19,6 +19,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "whealth",
+    "whospital_apps",
 ]
 
 MIDDLEWARE = [

@@ -1,0 +1,3 @@
+# Optional: a human-readable title for this control.
+title: Database Connection
+depends_on: []

@@ -14,3 +14,10 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 whealth = { workspace = true }
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "whospital.settings"
+pythonpath = ["src"]
+markers = [
+    "control: Mark a test that creates a temporary control via the tmp_control fixture.",
+]

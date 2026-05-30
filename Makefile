@@ -10,6 +10,7 @@ help:
 	@echo "Targets:"
 	@echo "  format     Auto-format Python code (ruff) and markdown (prettier)"
 	@echo "  lint       Check code quality with ruff and prettier"
+	@echo "  test       Run pytest suite"
 	@echo "  typecheck  Run mypy static type checking"
 	@echo "  clean      Run format, lint, and typecheck in sequence"
 	@echo ""
@@ -29,6 +30,10 @@ lint:
 ifneq ($(MD_FILES),)
 	$(PNPX) prettier --check --prose-wrap always $(MD_FILES)
 endif
+
+.PHONY: test
+test:
+	$(UV) run -m pytest packages/whospital/tests/ -v
 
 .PHONY: typecheck
 typecheck:
