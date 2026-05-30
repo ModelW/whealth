@@ -3,22 +3,89 @@
 from __future__ import annotations
 
 import pytest
-from whealth.registry import (
-    ControlRegistry,
-    get_control_registry,
-)
+from django.utils.timezone import now as django_now
+from whealth.models import Incident
+from whealth.registry import ControlInfo, ControlRegistry, Manifest
 from whealth.runner import ControlRunner
 from whospital_apps.models import KeyValue
 
 pytestmark = [pytest.mark.django_db]
 
+# ---------------------------------------------------------------------------
+# Control metadata needed to build a non-discovery registry
+# ---------------------------------------------------------------------------
 
-@pytest.fixture(autouse=True)
-def _clear_registry() -> None:
-    """Reset the singleton registry before each test."""
-    registry = get_control_registry()
-    registry.controllers.clear()
-    registry.discovery = None
+_CONTROLS: dict[str, dict[str, object]] = {
+    "alpha": {
+        "module": "whospital_apps.controls.alpha",
+        "deps": (),
+        "title": None,
+    },
+    "beta": {
+        "module": "whospital_apps.controls.beta",
+        "deps": ("alpha",),
+        "title": None,
+    },
+    "gamma": {
+        "module": "whospital_apps.controls.gamma",
+        "deps": ("beta",),
+        "title": None,
+    },
+    "delta": {
+        "module": "whospital_apps.controls.delta",
+        "deps": ("alpha",),
+        "title": None,
+    },
+    "epsilon": {
+        "module": "whospital_apps.controls.epsilon",
+        "deps": ("delta", "beta"),
+        "title": None,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def registry() -> ControlRegistry:
+    """Return a fresh registry with all sample controls registered."""
+    reg = ControlRegistry()
+    for slug, meta in _CONTROLS.items():
+        mod = __import__(meta["module"], fromlist=["Control"])
+        app_label = meta["module"].split(".")[0]
+        manifest = Manifest(depends_on=meta["deps"], title=meta["title"])
+        info = ControlInfo(
+            app_label=app_label,
+            slug=slug,
+            title=meta["title"],
+            module=meta["module"],
+            control_class=mod.Control,
+            manifest=manifest,
+            readme=f"# {slug}\n",
+        )
+        reg.register(info)
+    return reg
+
+
+@pytest.fixture
+def db_registry(registry: ControlRegistry) -> ControlRegistry:
+    """Return a registry synced to the database."""
+    registry.sync_to_db()
+    return registry
+
+
+@pytest.fixture
+def runner(registry: ControlRegistry) -> ControlRunner:
+    """Return a runner for the given registry (not yet run)."""
+    return ControlRunner(registry=registry)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _kv(key: str, value: str) -> None:
@@ -26,23 +93,14 @@ def _kv(key: str, value: str) -> None:
     KeyValue.objects.update_or_create(key=key, defaults={"value": value})
 
 
-def _run() -> ControlRunner:
-    """Discover and run all controls, returning the runner."""
-    registry = get_control_registry()
-    registry.discover()
-    runner = ControlRunner(registry=registry)
-    runner.run()
-    return runner
-
-
 # ---------------------------------------------------------------------------
 # Basic: all pass
 # ---------------------------------------------------------------------------
 
 
-def test_all_pass() -> None:
+def test_all_pass(runner: ControlRunner) -> None:
     """All controls pass when no KeyValue entries are set."""
-    runner = _run()
+    runner.run()
 
     for slug in ("alpha", "beta", "gamma", "delta", "epsilon"):
         result = runner.results[("whospital_apps", slug)]
@@ -55,10 +113,10 @@ def test_all_pass() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_alpha_error_blocks_all() -> None:
+def test_alpha_error_blocks_all(runner: ControlRunner) -> None:
     """An error on alpha blocks everyone (they all depend transitively)."""
     _kv("alpha", "error")
-    runner = _run()
+    runner.run()
 
     result_alpha = runner.results[("whospital_apps", "alpha")]
     assert result_alpha is not False
@@ -74,10 +132,10 @@ def test_alpha_error_blocks_all() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_warning_does_not_block() -> None:
+def test_warning_does_not_block(runner: ControlRunner) -> None:
     """A warning on alpha still allows dependents to run."""
     _kv("alpha", "warning")
-    runner = _run()
+    runner.run()
 
     result_alpha = runner.results[("whospital_apps", "alpha")]
     assert result_alpha is not False
@@ -94,10 +152,10 @@ def test_warning_does_not_block() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_beta_error_blocks_downstream() -> None:
+def test_beta_error_blocks_downstream(runner: ControlRunner) -> None:
     """An error on beta blocks gamma and epsilon but not alpha or delta."""
     _kv("beta", "error")
-    runner = _run()
+    runner.run()
 
     # alpha and delta are independent of beta
     assert runner.results[("whospital_apps", "alpha")] is not False
@@ -119,10 +177,10 @@ def test_beta_error_blocks_downstream() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_delta_internal_error_blocks_epsilon() -> None:
+def test_delta_internal_error_blocks_epsilon(runner: ControlRunner) -> None:
     """An internal_error on delta blocks epsilon but not alpha/beta/gamma."""
     _kv("delta", "internal_error")
-    runner = _run()
+    runner.run()
 
     assert runner.results[("whospital_apps", "alpha")] is not False
     assert runner.results[("whospital_apps", "beta")] is not False
@@ -142,10 +200,12 @@ def test_delta_internal_error_blocks_epsilon() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_exception_in_control_produces_internal_error() -> None:
+def test_exception_in_control_produces_internal_error(
+    runner: ControlRunner,
+) -> None:
     """An exception raised by a control is caught and recorded."""
     _kv("alpha", "value_that_makes_utils_raise")
-    runner = _run()
+    runner.run()
 
     result = runner.results[("whospital_apps", "alpha")]
     assert result is not False
@@ -160,8 +220,7 @@ def test_exception_in_control_produces_internal_error() -> None:
 
 def test_empty_registry() -> None:
     """A runner with an empty registry produces no results."""
-    registry = ControlRegistry()
-    runner = ControlRunner(registry=registry)
+    runner = ControlRunner(registry=ControlRegistry())
     runner.run()
     assert runner.results == {}
 
@@ -171,9 +230,9 @@ def test_empty_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_topological_order() -> None:
+def test_topological_order(runner: ControlRunner) -> None:
     """Controls are run in dependency order (parents before children)."""
-    runner = _run()
+    runner.run()
     keys = list(runner.results.keys())
 
     alpha_idx = keys.index(("whospital_apps", "alpha"))
@@ -187,3 +246,167 @@ def test_topological_order() -> None:
     assert beta_idx < gamma_idx
     assert beta_idx < epsilon_idx
     assert delta_idx < epsilon_idx
+
+
+# ---------------------------------------------------------------------------
+# Incident sync
+# ---------------------------------------------------------------------------
+
+
+def test_no_failures_creates_no_incidents(
+    db_registry: ControlRegistry,
+) -> None:
+    """Passing controls produce no incidents."""
+    runner = ControlRunner(registry=db_registry)
+    runner.run_and_sync()
+    assert Incident.objects.count() == 0
+    assert all(isinstance(v, list) for v in runner.results.values())
+
+
+def test_error_failure_creates_incident(db_registry: ControlRegistry) -> None:
+    """An error on alpha creates an open incident."""
+    _kv("alpha", "error")
+    runner = ControlRunner(registry=db_registry)
+    runner.run_and_sync()
+
+    incidents = Incident.objects.filter(control__slug="alpha")
+    assert incidents.count() == 1
+    inc = incidents.get()
+    assert inc.key == "alpha"
+    assert inc.date_start is not None
+    assert inc.date_end is None
+    assert inc.date_ignored is None
+
+
+def test_multiple_failures_create_separate_incidents(
+    db_registry: ControlRegistry,
+) -> None:
+    """A control with multiple failure keys creates one incident per key."""
+    _kv("beta", "error")
+    runner = ControlRunner(registry=db_registry)
+    runner.run_and_sync()
+
+    incidents = Incident.objects.filter(control__slug="beta")
+    assert incidents.count() == 1
+    assert incidents.get().key == "beta"
+
+
+def test_blocked_controls_dont_create_incidents(
+    db_registry: ControlRegistry,
+) -> None:
+    """Controls that were blocked (False result) don't get incidents."""
+    _kv("alpha", "error")
+    runner = ControlRunner(registry=db_registry)
+    runner.run_and_sync()
+
+    assert Incident.objects.filter(control__slug="alpha").count() == 1
+    for slug in ("beta", "gamma", "delta", "epsilon"):
+        assert Incident.objects.filter(control__slug=slug).count() == 0
+
+
+def test_resolved_failure_closes_incident(db_registry: ControlRegistry) -> None:
+    """A previously failing control that passes closes the incident."""
+    _kv("alpha", "error")
+    runner = ControlRunner(registry=db_registry)
+    runner.run_and_sync()
+    assert (
+        Incident.objects.filter(control__slug="alpha", date_end__isnull=True).count()
+        == 1
+    )
+
+    KeyValue.objects.filter(key="alpha").delete()
+    runner.run_and_sync()
+
+    inc = Incident.objects.get(control__slug="alpha")
+    assert inc.date_end is not None
+
+
+def test_sync_does_not_close_blocked_incidents(
+    db_registry: ControlRegistry,
+) -> None:
+    """Incidents stay open even when a control is blocked."""
+    _kv("beta", "error")
+    runner = ControlRunner(registry=db_registry)
+    runner.run_and_sync()
+
+    _kv("gamma", "error")
+    runner.run_and_sync()
+
+    beta_inc = Incident.objects.get(control__slug="beta")
+    assert beta_inc.date_end is None
+    assert Incident.objects.filter(control__slug="gamma").count() == 0
+
+
+def test_date_ignored_field_exists() -> None:
+    """date_ignored field is nullable and defaults to None."""
+    from whealth.models import Control
+
+    control = Control.objects.create(slug="test-ctrl", title="Test", app_label="test")
+    inc = Incident.objects.create(
+        control=control,
+        key="test-key",
+        date_start=django_now(),
+    )
+    assert inc.date_ignored is None
+    inc.date_ignored = django_now()
+    inc.save()
+    inc.refresh_from_db()
+    assert inc.date_ignored is not None
+
+
+# ---------------------------------------------------------------------------
+# Sentry auto-detection / capture_exception
+# ---------------------------------------------------------------------------
+
+
+def test_capture_exception_noop_when_no_sentry() -> None:
+    """capture_exception returns None when sentry-sdk is not installed."""
+    from whealth.auto_sentry import capture_exception
+
+    result = capture_exception(ValueError("test"))
+    assert result is None
+
+
+def test_control_exception_is_captured(
+    monkeypatch: pytest.MonkeyPatch,
+    registry: ControlRegistry,
+) -> None:
+    """An exception in a control is forwarded to capture_exception."""
+    calls: list[BaseException] = []
+
+    monkeypatch.setattr(
+        "whealth.runner.capture_exception",
+        lambda error=None, **kw: calls.append(error),
+    )
+
+    _kv("alpha", "value_that_makes_utils_raise")
+    registry.sync_to_db()
+    runner = ControlRunner(registry=registry)
+    runner.run()
+
+    assert len(calls) == 1
+    assert isinstance(calls[0], ValueError)
+
+
+def test_sync_incidents_handles_db_error(
+    monkeypatch: pytest.MonkeyPatch,
+    registry: ControlRegistry,
+) -> None:
+    """A DB failure in sync_incidents is captured and does not crash."""
+    calls: list[BaseException] = []
+
+    monkeypatch.setattr(
+        "whealth.runner._build_failure_map",
+        lambda _r, _reg: (_ for _ in ()).throw(RuntimeError("db down")),
+    )
+    monkeypatch.setattr(
+        "whealth.runner.capture_exception",
+        lambda e, **kw: calls.append(e),  # type: ignore[arg-type]
+    )
+
+    runner = ControlRunner(registry=registry)
+    runner.run()
+    runner.sync_incidents()
+
+    assert len(calls) == 1
+    assert isinstance(calls[0], RuntimeError)

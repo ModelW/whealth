@@ -8,6 +8,11 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+sentry = [
+    "sentry-sdk>=2.0",
+]
+
 [build-system]
 requires = ["uv_build<0.12"]
 build-backend = "uv_build"

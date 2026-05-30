@@ -45,6 +45,10 @@ module = ["whealth.models"]
 disable_error_code = ["var-annotated", "no-any-return"]
 
 [[tool.mypy.overrides]]
+module = ["sentry_sdk"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["whospital.settings"]
 disable_error_code = ["var-annotated"]
 

@@ -166,6 +166,15 @@ class Incident(models.Model):
         help_text=_("Timestamp when this incident started."),
         verbose_name=_("date start"),
     )
+    date_ignored = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text=_(
+            "Timestamp when this incident was last ignored. Null if never "
+            "ignored or still active."
+        ),
+        verbose_name=_("date ignored"),
+    )
     date_end = models.DateTimeField(
         blank=True,
         null=True,

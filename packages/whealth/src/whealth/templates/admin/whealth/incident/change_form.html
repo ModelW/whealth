@@ -1,0 +1,14 @@
+{% extends "admin/change_form.html" %}
+{% load i18n %}
+
+{% block object-tools-items %}
+  {% if original and original.date_end is None %}
+    <li>
+      <a href="{% url 'admin:whealth_incident_ignore' original.pk %}"
+         class="button" style="background: var(--primary); color: var(--body-bg);">
+        {% trans "Ignore incident" %}
+      </a>
+    </li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
