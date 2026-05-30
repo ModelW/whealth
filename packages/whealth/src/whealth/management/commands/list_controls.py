@@ -30,9 +30,7 @@ class Command(BaseCommand):
         errors = list(registry.discovery.errors)
         notes = list(registry.discovery.notes)
 
-        self.stdout.write(
-            self.style.SQL_FIELD(_("=== Valid controls ==="))
-        )
+        self.stdout.write(self.style.SQL_FIELD(_("=== Valid controls ===")))
 
         if not registry.controllers:
             self.stdout.write(_("  (none)"))
@@ -45,9 +43,7 @@ class Command(BaseCommand):
             )
 
         self.stdout.write("")
-        self.stdout.write(
-            self.style.SQL_FIELD(_("=== Checklist ==="))
-        )
+        self.stdout.write(self.style.SQL_FIELD(_("=== Checklist ===")))
 
         has_issues = False
 
@@ -96,9 +92,7 @@ class Command(BaseCommand):
                         % {"dep": n.dependency_ref, "ref": ref}
                     )
         else:
-            self.stdout.write(
-                _("  \u2705 Dependencies form a consistent graph")
-            )
+            self.stdout.write(_("  \u2705 Dependencies form a consistent graph"))
 
         if has_issues:
             sys.exit(1)

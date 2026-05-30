@@ -62,6 +62,18 @@ class Controller:
         return self.info.title or self.info.slug
 
     @property
+    def depends_on(self) -> list[tuple[str, str]]:
+        """Resolved dependency keys ``(app_label, slug)``."""
+        deps: list[tuple[str, str]] = []
+        for raw in self.info.manifest.depends_on:
+            if "." in raw:
+                app, _, slug = raw.partition(".")
+                deps.append((app, slug))
+            else:
+                deps.append((self.app_label, raw))
+        return deps
+
+    @property
     def key(self) -> tuple[str, str]:
         """Tuple identifier ``(app_label, slug)``."""
         return (self.info.app_label, self.info.slug)
@@ -314,9 +326,7 @@ class ControlRegistry:
     controllers: dict[tuple[str, str], Controller] = dataclasses.field(
         default_factory=dict, init=False
     )
-    discovery: DiscoveryResult | None = dataclasses.field(
-        default=None, init=False
-    )
+    discovery: DiscoveryResult | None = dataclasses.field(default=None, init=False)
 
     def register(self, info: ControlInfo) -> Controller:
         """Register a :class:`ControlInfo` and return its :class:`Controller`.
@@ -374,9 +384,7 @@ class ControlRegistry:
         for c in safe_controls:
             self.register(c)
 
-        self.discovery = DiscoveryResult(
-            errors=tuple(errors), notes=tuple(notes)
-        )
+        self.discovery = DiscoveryResult(errors=tuple(errors), notes=tuple(notes))
         return errors, notes
 
 

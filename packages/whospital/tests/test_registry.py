@@ -53,8 +53,8 @@ def tmp_control(request: pytest.FixtureRequest, tmp_path: Path) -> str:
         class Control(BaseControl):
             \"\"\"A test control.\"\"\"
 
-            def check(self) -> None:
-                pass
+            def get_failures(self) -> list:
+                return []
         """),
     )
 
@@ -84,14 +84,15 @@ def test_valid_database_control() -> None:
 
 
 def test_valid_bleeps_control() -> None:
-    """Loading the cross-app bleeps control succeeds."""
-    info = attempt_load(
-        "whospital_apps.controls.bleeps",
-        app_label="whospital_apps",
-    )
-    assert info.app_label == "whospital_apps"
-    assert info.slug == "bleeps"
-    assert info.manifest.depends_on == ("whealth.database",)
+    """Loading the whospital_apps controls succeeds."""
+    for slug in ("alpha", "beta", "gamma", "delta", "epsilon"):
+        info = attempt_load(
+            f"whospital_apps.controls.{slug}",
+            app_label="whospital_apps",
+        )
+        assert info.app_label == "whospital_apps"
+        assert info.slug == slug
+        assert info.control_class.__name__ == "Control"
 
 
 @pytest.mark.control(manifest="depends_on: []\n", readme="# fine\n")
@@ -161,7 +162,12 @@ def test_list_potential_controls() -> None:
     controls = list_potential_controls()
     entries = {(c.app_label, c.slug) for c in controls}
     assert ("whealth", "database") in entries
-    assert ("whospital_apps", "bleeps") in entries
+    assert ("whospital_apps", "alpha") in entries
+    assert ("whospital_apps", "beta") in entries
+    assert ("whospital_apps", "gamma") in entries
+    assert ("whospital_apps", "delta") in entries
+    assert ("whospital_apps", "epsilon") in entries
+    assert ("whospital_apps", "bleeps") not in entries
 
 
 def test_list_controls() -> None:
@@ -169,13 +175,9 @@ def test_list_controls() -> None:
     candidates = list_potential_controls()
     results = list_controls(candidates)
     assert len(results) == len(candidates)
-    slugs = {
-        (r.app_label, r.slug)
-        for r in results
-        if isinstance(r, ControlInfo)
-    }
+    slugs = {(r.app_label, r.slug) for r in results if isinstance(r, ControlInfo)}
     assert ("whealth", "database") in slugs
-    assert ("whospital_apps", "bleeps") in slugs
+    assert ("whospital_apps", "alpha") in slugs
 
 
 def test_resolve_dependencies_no_cycle() -> None:
@@ -195,8 +197,8 @@ def test_resolve_dependencies_removes_cycle() -> None:
     from whealth.registry import Manifest
 
     class FakeControl(BaseControl):
-        def check(self) -> None:
-            pass
+        def get_failures(self) -> list:
+            return []
 
     manifest_a = Manifest(depends_on=("b",))
     manifest_b = Manifest(depends_on=("a",))
@@ -204,7 +206,7 @@ def test_resolve_dependencies_removes_cycle() -> None:
     info_a = ControlInfo(
         app_label="test",
         slug="a",
-        title="A",
+        title=None,
         module="test.controls.a",
         control_class=FakeControl,
         manifest=manifest_a,
@@ -231,14 +233,14 @@ def test_resolve_dependencies_unresolved() -> None:
     from whealth.registry import Manifest
 
     class FakeControl(BaseControl):
-        def check(self) -> None:
-            pass
+        def get_failures(self) -> list:
+            return []
 
     manifest = Manifest(depends_on=("ghost",))
     info = ControlInfo(
         app_label="test",
         slug="a",
-        title="A",
+        title=None,
         module="test.controls.a",
         control_class=FakeControl,
         manifest=manifest,

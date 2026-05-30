@@ -61,9 +61,7 @@ def resolve_dependencies(
         (c.app_label, c.slug): c for c in controls
     }
 
-    graph: dict[tuple[str, str], list[tuple[str, str]]] = {
-        key: [] for key in lookup
-    }
+    graph: dict[tuple[str, str], list[tuple[str, str]]] = {key: [] for key in lookup}
 
     notes: list[DependencyNote] = []
 
@@ -96,8 +94,7 @@ def resolve_dependencies(
                 )
 
     dropped_refs: set[tuple[str, str, str, DependencyIssue]] = {
-        (d.control_app_label, d.control_slug, d.dependency_ref, d.reason)
-        for d in notes
+        (d.control_app_label, d.control_slug, d.dependency_ref, d.reason) for d in notes
     }
 
     safe_controls: list[ControlInfo] = []
@@ -105,8 +102,7 @@ def resolve_dependencies(
         safe_deps = [
             dep
             for dep in c.manifest.depends_on
-            if (c.app_label, c.slug, dep, DependencyIssue.CYCLE)
-            not in dropped_refs
+            if (c.app_label, c.slug, dep, DependencyIssue.CYCLE) not in dropped_refs
         ]
         safe_manifest = Manifest(
             depends_on=tuple(safe_deps),
@@ -144,6 +140,39 @@ def _has_cycle(
         colour[node] = BLACK
         return False
 
-    return any(
-        colour[node] == WHITE and dfs(node) for node in graph
-    )
+    return any(colour[node] == WHITE and dfs(node) for node in graph)
+
+
+def topological_sort(
+    graph: dict[tuple[str, str], list[tuple[str, str]]],
+) -> list[tuple[str, str]]:
+    """Return nodes in topological order (Kahn's algorithm).
+
+    Parameters
+    ----------
+    graph : dict of (app_label, slug) -> list of (app_label, slug)
+        Adjacency list where each key points to its dependencies.
+
+    Returns
+    -------
+    list of (str, str)
+        Nodes ordered so that dependencies appear before their
+        dependents.  Nodes involved in cycles are appended at the
+        end in arbitrary order.
+    """
+    in_degree: dict[tuple[str, str], int] = {n: len(deps) for n, deps in graph.items()}
+
+    queue = [n for n, d in in_degree.items() if d == 0]
+    order: list[tuple[str, str]] = []
+    while queue:
+        node = queue.pop(0)
+        order.append(node)
+        for parent, deps in graph.items():
+            if node in deps:
+                in_degree[parent] -= 1
+                if in_degree[parent] == 0:
+                    queue.append(parent)
+
+    remaining = [n for n, d in in_degree.items() if d > 0]
+    order.extend(remaining)
+    return order
