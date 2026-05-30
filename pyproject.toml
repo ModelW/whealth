@@ -1,6 +1,7 @@
 [tool.ruff]
 line-length = 88
 target-version = "py314"
+exclude = [".venv", "migrations"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -22,8 +23,34 @@ select = [
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "requests".msg = "Use `httpx` instead, which has timeouts by default."
 
+[tool.ruff.lint.per-file-ignores]
+"*/models.py" = ["D105", "D106"]
+"*/settings.py" = ["D100", "S105"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+exclude = [
+    "/\\.venv/",
+    "/migrations/",
+]
+
+[[tool.mypy.overrides]]
+module = ["django.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["whealth.models"]
+disable_error_code = ["var-annotated", "no-any-return"]
+
+[[tool.mypy.overrides]]
+module = ["whospital.settings"]
+disable_error_code = ["var-annotated"]
+
 [tool.uv]
 dev-dependencies = [
+    "django-stubs>=5.0",
+    "mypy>=2.1.0",
     "ruff>=0.15.15",
 ]
 

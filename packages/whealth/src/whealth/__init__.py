@@ -1,1 +1,1 @@
-"""whealth - Django health-checking package."""
+"""whealth - Django health-checking app."""
