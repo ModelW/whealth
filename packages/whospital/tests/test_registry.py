@@ -257,3 +257,65 @@ def test_resolve_dependencies_unresolved() -> None:
     # An unresolved dependency is kept in safe depends_on
     # (it's not a cycle, just an unknown reference).
     assert safe[0].manifest.depends_on == ("ghost",)
+
+
+@pytest.mark.django_db
+def test_sync_to_db_creates_and_deactivates() -> None:
+    """sync_to_db creates Control rows and deactivates stale ones."""
+    from whealth.base import BaseControl
+    from whealth.models import Control as ControlModel
+    from whealth.registry import ControlInfo, ControlRegistry, Manifest
+
+    class FakeControl(BaseControl):
+        def get_failures(self) -> list:
+            return []
+
+    class OtherControl(BaseControl):
+        def get_failures(self) -> list:
+            return []
+
+    ControlModel.objects.create(
+        slug="stale",
+        title="Stale",
+        app_label="test",
+        active=True,
+    )
+
+    registry = ControlRegistry()
+    info_a = ControlInfo(
+        app_label="test",
+        slug="alpha",
+        title="Alpha",
+        module="test.controls.alpha",
+        control_class=FakeControl,
+        manifest=Manifest(depends_on=()),
+        readme="# Alpha",
+    )
+    info_b = ControlInfo(
+        app_label="test",
+        slug="beta",
+        title=None,
+        module="test.controls.beta",
+        control_class=OtherControl,
+        manifest=Manifest(depends_on=("alpha",)),
+        readme="# Beta",
+    )
+    registry.register(info_a)
+    registry.register(info_b)
+
+    registry.sync_to_db()
+
+    assert ControlModel.objects.count() == 3
+    alpha = ControlModel.objects.get(slug="alpha")
+    assert alpha.active is True
+    assert alpha.title == "Alpha"
+    assert alpha.app_label == "test"
+    assert alpha.description == "# Alpha"
+
+    beta = ControlModel.objects.get(slug="beta")
+    assert beta.active is True
+    assert beta.title == "beta"
+    assert list(beta.depends_on.all()) == [alpha]
+
+    stale = ControlModel.objects.get(slug="stale")
+    assert stale.active is False

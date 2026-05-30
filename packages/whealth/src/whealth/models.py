@@ -121,6 +121,11 @@ class Control(models.Model):
         help_text=_("Human-readable title for this control."),
         verbose_name=_("title"),
     )
+    app_label = models.CharField(
+        max_length=128,
+        help_text=_("Django app label that discovered this control."),
+        verbose_name=_("app label"),
+    )
     description = models.TextField(
         blank=True,
         default="",
@@ -129,6 +134,11 @@ class Control(models.Model):
             "control — explains what is checked and what to do on failure."
         ),
         verbose_name=_("description"),
+    )
+    active = models.BooleanField(
+        default=True,
+        help_text=_("Whether this control is still discovered by the registry."),
+        verbose_name=_("active"),
     )
     depends_on = models.ManyToManyField(
         "self",

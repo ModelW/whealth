@@ -7,7 +7,7 @@ import importlib
 import inspect
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from django.apps import apps
@@ -386,6 +386,131 @@ class ControlRegistry:
 
         self.discovery = DiscoveryResult(errors=tuple(errors), notes=tuple(notes))
         return errors, notes
+
+    def sync_to_db(self) -> None:
+        """Reflect the current set of discovered controllers into the DB.
+
+        Creates or updates :class:`~whealth.models.Control` rows for every
+        registered controller using bulk operations.  Rows for controls that
+        are no longer discovered are deactivated.
+
+        The method issues at most 6 queries: one read, one bulk-create,
+        one bulk-update (scalars), two for activity, plus clear-and-replace
+        for depends_on links.
+        """
+        from whealth.models import Control as ControlModel
+
+        known_slugs = {c.slug for c in self.controllers.values()}
+        existing = {
+            row.slug: row for row in ControlModel.objects.filter(slug__in=known_slugs)
+        }
+
+        self._sync_scalars(existing, known_slugs)
+        self._sync_activity(known_slugs)
+        self._sync_depends_on(known_slugs)
+
+    def _sync_scalars(
+        self,
+        existing: dict[str, Any],
+        known_slugs: set[str],
+    ) -> None:
+        """Bulk-create new rows and bulk-update changed scalar fields."""
+        from whealth.models import Control as ControlModel
+
+        scalar_updates: list[ControlModel] = []
+        creates: list[ControlModel] = []
+
+        for controller in self.controllers.values():
+            slug = controller.slug
+            if slug not in known_slugs:
+                continue
+            if slug in existing:
+                row = existing[slug]
+                dirty = False
+                title = controller.title
+                app_label = controller.app_label
+                description = controller.info.readme
+                if row.title != title:
+                    row.title = title
+                    dirty = True
+                if row.app_label != app_label:
+                    row.app_label = app_label
+                    dirty = True
+                if row.description != description:
+                    row.description = description
+                    dirty = True
+                if dirty:
+                    scalar_updates.append(row)
+            else:
+                creates.append(
+                    ControlModel(
+                        slug=slug,
+                        title=controller.title,
+                        app_label=controller.app_label,
+                        description=controller.info.readme,
+                        active=True,
+                    )
+                )
+
+        if creates:
+            ControlModel.objects.bulk_create(creates)
+        if scalar_updates:
+            ControlModel.objects.bulk_update(
+                scalar_updates, ("title", "app_label", "description")
+            )
+
+    def _sync_activity(
+        self,
+        known_slugs: set[str],
+    ) -> None:
+        """Activate discovered rows and deactivate stale rows."""
+        from whealth.models import Control as ControlModel
+
+        ControlModel.objects.filter(slug__in=known_slugs, active=False).update(
+            active=True
+        )
+        ControlModel.objects.exclude(slug__in=known_slugs).filter(active=True).update(
+            active=False
+        )
+
+    def _sync_depends_on(
+        self,
+        known_slugs: set[str],
+    ) -> None:
+        """Clear and bulk-replace all depends_on links."""
+        from whealth.models import Control as ControlModel
+
+        if not known_slugs:
+            return
+
+        all_rows = {
+            r.slug: r for r in ControlModel.objects.filter(slug__in=known_slugs)
+        }
+
+        through = ControlModel.depends_on.through
+
+        pks = {r.pk for r in all_rows.values()}
+        through.objects.filter(from_control_id__in=pks).delete()
+
+        links: list[Any] = []
+        for controller in self.controllers.values():
+            if controller.slug not in known_slugs:
+                continue
+            parent = all_rows.get(controller.slug)
+            if parent is None:
+                continue
+            for _app_label, dep_slug in controller.depends_on:
+                dep = all_rows.get(dep_slug)
+                if dep is not None:
+                    links.append(
+                        through(
+                            from_control_id=parent.pk,
+                            to_control_id=dep.pk,
+                        )
+                    )
+
+        if links:
+            through.objects.bulk_create(links, ignore_conflicts=True)
 
 
 _cr_lock = threading.Lock()
