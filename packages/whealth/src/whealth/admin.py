@@ -281,7 +281,7 @@ class RunRecordAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
         """Render a compact summary string."""
         r = obj.results
         if not r:
-            return "—"
+            return "\u2014"
         p = w = e = b = 0
         for v in r.values():
             if v is None:
@@ -308,14 +308,14 @@ class RunRecordAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
         """Render human-readable duration."""
         d = obj.duration
         if d is None:
-            return "—"
+            return "\u2014"
         total = int(d.total_seconds())
         if total < 60:
             return f"{total}s"
         return f"{total // 60}m {total % 60}s"
 
     def has_add_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
-        """Return False — run records are created programmatically."""
+        """Return False \u2014 run records are created programmatically."""
         return False
 
     def has_change_permission(self, request, obj=None):  # type: ignore[no-untyped-def]

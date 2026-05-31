@@ -53,6 +53,11 @@ class RunRecord(models.Model):
         verbose_name_plural = _("run records")
         get_latest_by = "date_start"
         ordering = ("-date_start",)
+        indexes = [  # noqa: RUF012
+            models.Index(
+                fields=["date_end", "date_start"], name="whealth_run_date_en_27f136_idx"
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Run @ {self.date_start} on {self.hostname}"
