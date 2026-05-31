@@ -18,7 +18,5 @@ class Control(BaseControl):
             try:
                 cache.get_or_set("_whealth_ping", True, 5)
             except Exception:
-                failures.append(
-                    Failure(key=alias, outcome="error")
-                )
+                failures.append(Failure(key=alias, outcome="error"))
         return failures

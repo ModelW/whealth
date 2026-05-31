@@ -18,7 +18,5 @@ class Control(BaseControl):
             try:
                 storage.exists("_whealth_ping")
             except Exception:
-                failures.append(
-                    Failure(key=alias, outcome="error")
-                )
+                failures.append(Failure(key=alias, outcome="error"))
         return failures

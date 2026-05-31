@@ -19,7 +19,5 @@ class Control(BaseControl):
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT 1")
             except Exception:
-                failures.append(
-                    Failure(key=alias, outcome="error")
-                )
+                failures.append(Failure(key=alias, outcome="error"))
         return failures

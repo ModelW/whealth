@@ -1,5 +1,6 @@
 """Models for the whealth health-checking app."""
 
+import uuid
 from typing import ClassVar
 
 from django.db import models
@@ -81,6 +82,14 @@ class Cron(models.Model):
 class CheckIn(models.Model):
     """A single check-in event for a cron health check."""
 
+    class State(models.TextChoices):
+        """Possible states of a check-in."""
+
+        STARTED = "started", _("Started")
+        FINISHED = "finished", _("Finished")
+        FAILED = "failed", _("Failed")
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     cron = models.ForeignKey(
         Cron,
         on_delete=models.CASCADE,
@@ -97,6 +106,20 @@ class CheckIn(models.Model):
         null=True,
         help_text=_("Timestamp of when this check-in ended. Null while still running."),
         verbose_name=_("end"),
+    )
+    state = models.CharField(
+        max_length=16,
+        choices=State.choices,
+        default=State.STARTED,
+        help_text=_("Current state of this check-in."),
+        verbose_name=_("state"),
+    )
+    sentry_checkin_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=_("Sentry check-in ID returned by capture_checkin."),
+        verbose_name=_("sentry check-in ID"),
     )
 
     class Meta:
