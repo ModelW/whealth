@@ -518,12 +518,13 @@ _cr: ControlRegistry | None = None
 
 
 def get_control_registry() -> ControlRegistry:
-    """Return the singleton ``ControlRegistry``."""
+    """Return the singleton ``ControlRegistry``, discovering controls on first call."""
     global _cr
 
     if _cr is None:
         with _cr_lock:
             if _cr is None:
                 _cr = ControlRegistry()
+                _cr.discover()
 
     return _cr

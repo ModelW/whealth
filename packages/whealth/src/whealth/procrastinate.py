@@ -124,11 +124,13 @@ def procrastinate_task(
         if cron is None:
             return app.task(**task_kwargs)(func)  # type: ignore[no-any-return]
 
-        def build(func: Callable[..., Any]) -> Callable[..., Any]:
+        is_async = inspect.iscoroutinefunction(func)
+
+        if is_async:
 
             @wraps(func)
             @task_trace(name=func.__name__)
-            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 close_old_connections()
                 reset_queries()
                 try:
@@ -143,8 +145,37 @@ def procrastinate_task(
                     )
                     failed = False
                     try:
-                        if inspect.iscoroutinefunction(func):
-                            return await func(*args, **kwargs)
+                        return await func(*args, **kwargs)
+                    except Exception:
+                        failed = True
+                        raise
+                    finally:
+                        get_checkin_manager().check_out(receipt, failed=failed)
+                finally:
+                    close_old_connections()
+                    reset_queries()
+
+            wrapper: Callable[..., Any] = async_wrapper
+
+        else:
+
+            @wraps(func)
+            @task_trace(name=func.__name__)
+            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                close_old_connections()
+                reset_queries()
+                try:
+                    receipt = get_checkin_manager().check_in(
+                        slug=slug,
+                        schedule=CrontabSchedule(expression=cron.expression),
+                        timezone=cron.timezone,
+                        checkin_margin=cron.checkin_margin,
+                        max_runtime=cron.max_runtime,
+                        failure_issue_threshold=cron.failure_issue_threshold,
+                        recovery_threshold=cron.recovery_threshold,
+                    )
+                    failed = False
+                    try:
                         return func(*args, **kwargs)
                     except Exception:
                         failed = True
@@ -155,11 +186,11 @@ def procrastinate_task(
                     close_old_connections()
                     reset_queries()
 
-            task = app.task(**task_kwargs)(wrapper)
-            slug = task.name
-            app.periodic(cron=cron.expression)(task)
-            return task  # type: ignore[no-any-return]
+            wrapper = sync_wrapper
 
-        return build(func)
+        task = app.task(**task_kwargs)(wrapper)
+        slug = task.name
+        app.periodic(cron=cron.expression)(task)
+        return task  # type: ignore[no-any-return]
 
     return decorator

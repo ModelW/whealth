@@ -193,11 +193,14 @@ class ControlAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
     )
     list_filter: ClassVar = ("active", "app_label")
     search_fields: ClassVar = ("slug", "title")
-    readonly_fields: ClassVar = ("slug", "title", "app_label", "description")
-    list_editable: ClassVar = ("active",)
+    readonly_fields: ClassVar = ("slug", "title", "app_label", "description", "active")
 
     def has_add_permission(self, request):  # type: ignore[no-untyped-def]
         """Return False — controls are created by discovery."""
+        return False
+
+    def has_change_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
+        """Return False — controls are read-only in the admin."""
         return False
 
     def has_delete_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
@@ -218,3 +221,15 @@ class CronAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
         "max_runtime",
     )
     search_fields: ClassVar = ("slug",)
+
+    def has_add_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
+        """Return False — crons are managed programmatically."""
+        return False
+
+    def has_change_permission(self, request, obj = ...):
+        """Crons are read-only in the admin."""
+        return False
+
+    def has_delete_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
+        """Return False — crons are managed programmatically."""
+        return False

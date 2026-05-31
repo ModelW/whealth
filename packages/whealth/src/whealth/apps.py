@@ -13,4 +13,4 @@ class WhealthConfig(AppConfig):
         """Discover and register all controls on startup."""
         from whealth.registry import get_control_registry
 
-        get_control_registry().discover()
+        get_control_registry().sync_to_db()
