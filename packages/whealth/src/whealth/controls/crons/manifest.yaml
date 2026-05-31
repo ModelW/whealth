@@ -1,0 +1,4 @@
+title: Cron Schedule
+# Relies on the database to read Cron and CheckIn data.
+depends_on:
+  - database

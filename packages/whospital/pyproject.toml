@@ -31,3 +31,8 @@ postgres_image = "postgres:16-alpine"
 postgres_user = "postgres"
 postgres_password = "postgres"
 postgres_database = "postgres"
+
+[dependency-groups]
+dev = [
+    "freezegun>=1.5.5",
+]
