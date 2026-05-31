@@ -1,23 +1,22 @@
-"""Database health control."""
+"""Storage health control."""
 
 from __future__ import annotations
 
 from django.conf import settings
-from django.db import connections
+from django.core.files.storage import storages
 from whealth import BaseControl, Failure
 
 
 class Control(BaseControl):
-    """Check that every configured database connection is alive."""
+    """Check that every configured storage backend is reachable."""
 
     def get_failures(self) -> list[Failure]:
-        """Run the database health check."""
+        """Run the storage health check."""
         failures: list[Failure] = []
-        for alias in settings.DATABASES:
-            conn = connections[alias]
+        for alias in settings.STORAGES:
+            storage = storages[alias]
             try:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT 1")
+                storage.exists("_whealth_ping")
             except Exception:
                 failures.append(
                     Failure(key=alias, outcome="error")
