@@ -6,6 +6,10 @@ requires-python = ">=3.14"
 dependencies = [
     "django>=5.0",
     "whealth",
+    "procrastinate>=3.0",
+    "psycopg[binary]>=3.3.4",
+    "testcontainers[postgres]>=4.14.2",
+    "dj-database-url>=2.0",
 ]
 
 [build-system]
@@ -21,3 +25,9 @@ pythonpath = ["src"]
 markers = [
     "control: Mark a test that creates a temporary control via the tmp_control fixture.",
 ]
+
+[tool.pytest-testcontainers-django]
+postgres_image = "postgres:16-alpine"
+postgres_user = "postgres"
+postgres_password = "postgres"
+postgres_database = "postgres"

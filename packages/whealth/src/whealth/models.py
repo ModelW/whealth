@@ -114,13 +114,6 @@ class CheckIn(models.Model):
         help_text=_("Current state of this check-in."),
         verbose_name=_("state"),
     )
-    sentry_checkin_id = models.CharField(
-        max_length=64,
-        blank=True,
-        default="",
-        help_text=_("Sentry check-in ID returned by capture_checkin."),
-        verbose_name=_("sentry check-in ID"),
-    )
 
     class Meta:
         verbose_name = _("check-in")

@@ -1,7 +1,10 @@
 """Django settings for whospital."""
 
+import os
 import tempfile
 from pathlib import Path
+
+import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -18,6 +21,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "procrastinate.contrib.django",
     "whealth",
     "whospital_apps",
 ]
@@ -46,8 +50,21 @@ TEMPLATES = [
 STATIC_URL = "static/"
 
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": Path(tempfile.gettempdir()) / "whospital.sqlite",
-    },
+    "default": dj_database_url.config(
+        default="sqlite:///" + str(Path(tempfile.gettempdir()) / "whospital.sqlite"),
+    ),
 }
+
+# If pytest-testcontainers-django injected individual env vars, assemble
+# a DATABASE_URL from them as a fallback (takes precedence over the default
+# only when the plugin is active).
+_db_url_from_parts = os.environ.get("DATABASE_URL") or (
+    os.environ.get("DJANGO_DB_HOST")
+    and (
+        f"postgresql://{os.environ['DJANGO_DB_USER']}:{os.environ['DJANGO_DB_PASSWORD']}"
+        f"@{os.environ['DJANGO_DB_HOST']}:{os.environ['DJANGO_DB_PORT']}"
+        f"/{os.environ['DJANGO_DB_NAME']}"
+    )
+)
+if _db_url_from_parts:
+    DATABASES["default"] = dj_database_url.parse(_db_url_from_parts)

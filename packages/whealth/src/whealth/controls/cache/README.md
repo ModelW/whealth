@@ -1,5 +1,5 @@
-Calls `get_or_set` with a short TTL on every cache backend configured in
-Calls `get_or_set` with a short TTL on every cache backend configured in
+Calls `get_or_set` with a short TTL on every cache backend configured in Calls
+`get_or_set` with a short TTL on every cache backend configured in
 `settings.CACHES`. If the operation fails for any backend, a failure is raised
 using that backend's alias as the key. Each cache is checked independently so a
 Redis outage doesn't mask a healthy Memcached or local-memory backend.
