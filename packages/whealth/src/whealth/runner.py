@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import TYPE_CHECKING, Literal
+import socket
+import sys
+from typing import TYPE_CHECKING, Any, Literal
 
 from django.db import transaction
 from django.utils.timezone import now as django_now
@@ -13,6 +15,8 @@ from whealth.auto_sentry import capture_exception
 from whealth.graph import topological_sort
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from whealth.base import Failure
     from whealth.registry import ControlRegistry
 
@@ -36,6 +40,7 @@ class ControlRunner:
     results: dict[tuple[str, str], RunResult] = dataclasses.field(
         default_factory=dict, init=False
     )
+    _run_started: datetime | None = dataclasses.field(default=None, init=False)
 
     def run(self) -> None:
         """Execute every registered control in dependency order.
@@ -45,6 +50,7 @@ class ControlRunner:
         ``False``.
         """
         self.results.clear()
+        self._run_started = django_now()
 
         graph: dict[tuple[str, str], list[tuple[str, str]]] = {}
         for controller in self.registry.controllers.values():
@@ -104,7 +110,7 @@ class ControlRunner:
 
     def _sync_incidents(self) -> None:
         """Inner implementation of incident sync."""
-        from whealth.models import Incident
+        from whealth.models import Incident, RunRecord
 
         now = django_now()
         failure_map = _build_failure_map(self.results, self.registry)
@@ -131,6 +137,17 @@ class ControlRunner:
 
         to_close = list(open_incidents.values())
 
+        results_serialised: dict[str, Any] = {}
+        for key, result in self.results.items():
+            label = f"{key[0]}.{key[1]}"
+            if result is False:
+                results_serialised[label] = None
+            else:
+                results_serialised[label] = [dataclasses.asdict(f) for f in result]
+
+        run_start = self._run_started or now
+        run_duration = now - run_start if self._run_started else None
+
         with transaction.atomic():
             if to_create:
                 Incident.objects.bulk_create(to_create)
@@ -138,6 +155,13 @@ class ControlRunner:
                 Incident.objects.filter(pk__in={i.pk for i in to_close}).update(
                     date_end=now
                 )
+            RunRecord.objects.create(
+                date_start=run_start,
+                hostname=socket.gethostname(),
+                cli=" ".join(sys.argv),
+                duration=run_duration,
+                results=results_serialised,
+            )
 
 
 def _any_dep_failed(

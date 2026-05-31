@@ -1,6 +1,7 @@
 """App configuration for whealth."""
 
 from django.apps import AppConfig
+from django.db import ProgrammingError
 
 
 class WhealthConfig(AppConfig):
@@ -13,4 +14,7 @@ class WhealthConfig(AppConfig):
         """Discover and register all controls on startup."""
         from whealth.registry import get_control_registry
 
-        get_control_registry().sync_to_db()
+        try:
+            get_control_registry().sync_to_db()
+        except ProgrammingError:
+            pass

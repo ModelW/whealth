@@ -14,7 +14,7 @@ from django.urls import reverse
 from django.utils.timezone import now as django_now
 from django.utils.translation import gettext_lazy as _
 
-from whealth.models import Control, Cron, Incident
+from whealth.models import Control, Cron, Incident, RunRecord
 
 if TYPE_CHECKING:
     from django.http import HttpRequest
@@ -226,10 +226,102 @@ class CronAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
         """Return False — crons are managed programmatically."""
         return False
 
-    def has_change_permission(self, request, obj = ...):
+    def has_change_permission(self, request, obj=...):
         """Crons are read-only in the admin."""
         return False
 
     def has_delete_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
         """Return False — crons are managed programmatically."""
+        return False
+
+
+@admin.register(RunRecord)
+class RunRecordAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    """Admin interface for run records."""
+
+    list_display: ClassVar = (
+        "date_start",
+        "hostname",
+        "cli",
+        "summary_display",
+        "duration_display",
+    )
+    list_filter: ClassVar = ("hostname",)
+    date_hierarchy = "date_start"
+    readonly_fields: ClassVar = (
+        "date_start",
+        "date_end",
+        "hostname",
+        "cli",
+        "results",
+    )
+
+    fieldsets: ClassVar = [
+        (
+            None,
+            {
+                "fields": (
+                    "date_start",
+                    "date_end",
+                    "hostname",
+                    "cli",
+                ),
+            },
+        ),
+        (
+            _("Results"),
+            {
+                "fields": ("results",),
+            },
+        ),
+    ]
+
+    @admin.display(description=_("summary"))
+    def summary_display(self, obj: RunRecord) -> str:
+        """Render a compact summary string."""
+        r = obj.results
+        if not r:
+            return "—"
+        p = w = e = b = 0
+        for v in r.values():
+            if v is None:
+                b += 1
+            elif not v:
+                p += 1
+            elif any(f.get("outcome") in ("error", "internal_error") for f in v):
+                e += 1
+            elif any(f.get("outcome") == "warning" for f in v):
+                w += 1
+            else:
+                p += 1
+        parts = [f"{p}P"]
+        if w:
+            parts.append(f"{w}W")
+        if e:
+            parts.append(f"{e}E")
+        if b:
+            parts.append(f"{b}B")
+        return "  ".join(parts)
+
+    @admin.display(description=_("duration"))
+    def duration_display(self, obj: RunRecord) -> str:
+        """Render human-readable duration."""
+        d = obj.duration
+        if d is None:
+            return "—"
+        total = int(d.total_seconds())
+        if total < 60:
+            return f"{total}s"
+        return f"{total // 60}m {total % 60}s"
+
+    def has_add_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
+        """Return False — run records are created programmatically."""
+        return False
+
+    def has_change_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
+        """Run records are read-only in the admin."""
+        return False
+
+    def has_delete_permission(self, request, obj=None):  # type: ignore[no-untyped-def]
+        """Run records are read-only in the admin."""
         return False

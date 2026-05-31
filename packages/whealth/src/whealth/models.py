@@ -7,6 +7,57 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 
+class RunRecord(models.Model):
+    """A snapshot of a full control run — all results at a point in time."""
+
+    date_start = models.DateTimeField(
+        help_text=_("Timestamp when this run started."),
+        verbose_name=_("date start"),
+    )
+    date_end = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text=_("Timestamp when this run completed. Null while still running."),
+        verbose_name=_("date end"),
+    )
+    duration = models.DurationField(
+        blank=True,
+        null=True,
+        help_text=_("Wall-clock duration of this run."),
+        verbose_name=_("duration"),
+    )
+    hostname = models.CharField(
+        max_length=255,
+        help_text=_("Hostname of the machine that performed this run."),
+        verbose_name=_("hostname"),
+    )
+    cli = models.CharField(
+        max_length=1024,
+        blank=True,
+        default="",
+        help_text=_("CLI command that triggered this run (sys.argv)."),
+        verbose_name=_("CLI"),
+    )
+    results = models.JSONField(
+        blank=True,
+        default=dict,
+        help_text=_(
+            "Full results snapshot — mapping of ``app_label.slug`` to "
+            "a list of serialised Failure dicts, or ``null`` for blocked."
+        ),
+        verbose_name=_("results"),
+    )
+
+    class Meta:
+        verbose_name = _("run record")
+        verbose_name_plural = _("run records")
+        get_latest_by = "date_start"
+        ordering = ("-date_start",)
+
+    def __str__(self) -> str:
+        return f"Run @ {self.date_start} on {self.hostname}"
+
+
 class Cron(models.Model):
     """A cron-based health check that expects periodic check-ins."""
 
