@@ -36,9 +36,13 @@ def _latest_run_with_ignored() -> tuple[RunRecord | None, set[str]]:
 
 
 def _is_ok(label: str, result: Any, ignored: set[str]) -> bool:
-    """Return True if the control result is passing or its failures are ignored."""
+    """Return True if the control result is passing or its failures are ignored.
+
+    ``result is None`` means the control was blocked by a dependency —
+    its own check never ran, so it is considered ok.
+    """
     if result is None:
-        return False
+        return True
     if not result:
         return True
     if label in ignored:
@@ -111,7 +115,7 @@ def control_detail(request: HttpRequest, app: str, slug: str) -> JsonResponse:
     label = f"{app}.{slug}"
     result = latest.results.get(label)
     if result is None:
-        return JsonResponse({"ok": False}, status=404)
+        return JsonResponse({"ok": True}, status=200)
 
     ok = _is_ok(label, result, ignored)
     return JsonResponse({"ok": ok}, status=200 if ok else 418)

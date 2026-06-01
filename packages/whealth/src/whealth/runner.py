@@ -172,21 +172,27 @@ class ControlRunner:
 # Dependency-comparison helpers
 # ---------------------------------------------------------------------------
 
-def _get_ignored_incident_keys() -> set[tuple[tuple[str, str], str]] | None:
-    """Return the set of ``(control_key, failure_key)`` for incidents
-    that are currently ignored, or ``None`` if the database is unreachable.
 
-    When the DB is unreachable we fall back to strict blocking (return
-    ``None``) because we cannot tell which incidents are ignored.
+def _get_ignored_incident_keys() -> set[tuple[tuple[str, str], str]] | None:
+    """Return the set of ``(control_key, failure_key)`` for ignored incidents.
+
+    Returns the set of ``(control_key, failure_key)`` for incidents that
+    are currently ignored (``date_ignored IS NOT NULL`` and still open).
+    Returns ``None`` if the database is unreachable, in which case the
+    runner falls back to strict blocking.
     """
     from whealth.models import Incident
 
     try:
         ignored: set[tuple[tuple[str, str], str]] = set()
-        for inc in Incident.objects.filter(
-            date_end__isnull=True,
-            date_ignored__isnull=False,
-        ).select_related("control").iterator():
+        for inc in (
+            Incident.objects.filter(
+                date_end__isnull=True,
+                date_ignored__isnull=False,
+            )
+            .select_related("control")
+            .iterator()
+        ):
             ignored.add(((inc.control.app_label, inc.control.slug), inc.key))
         return ignored
     except Exception:
