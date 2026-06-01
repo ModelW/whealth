@@ -28,7 +28,6 @@ if app is not None:
     @procrastinate_task(
         app=app,
         cron=ProcrastinateCron(expression="* * * * *"),
-        queue="health",
     )
     def run_controls(timestamp: int) -> None:
         """Run all registered controls and sync incidents."""
@@ -41,7 +40,6 @@ if app is not None:
     @procrastinate_task(
         app=app,
         cron=ProcrastinateCron(expression="0 3 * * *"),
-        queue="maintenance",
     )
     def prune_run_logs(timestamp: int) -> None:
         """Delete ``RunRecord`` rows older than the configured retention period.

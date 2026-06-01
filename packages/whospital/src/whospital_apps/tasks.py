@@ -9,7 +9,6 @@ from whealth.procrastinate import ProcrastinateCron, procrastinate_task
 @procrastinate_task(
     app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
-    queue="health",
 )
 def my_cron_task(timestamp: int) -> None:
     """Periodically check in with the health-cron system."""
@@ -23,7 +22,6 @@ def my_cron_task(timestamp: int) -> None:
 @procrastinate_task(
     app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
-    queue="test",
 )
 def sync_success(timestamp: int) -> None:
     """Test task: sync, succeeds."""
@@ -32,7 +30,6 @@ def sync_success(timestamp: int) -> None:
 @procrastinate_task(
     app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
-    queue="test",
 )
 def sync_fail(timestamp: int) -> None:
     """Test task: sync, raises."""
@@ -43,7 +40,6 @@ def sync_fail(timestamp: int) -> None:
 @procrastinate_task(
     app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
-    queue="test",
 )
 async def async_success(timestamp: int) -> None:
     """Test task: async, succeeds."""
@@ -52,7 +48,6 @@ async def async_success(timestamp: int) -> None:
 @procrastinate_task(
     app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
-    queue="test",
 )
 async def async_fail(timestamp: int) -> None:
     """Test task: async, raises."""
