@@ -16,6 +16,7 @@ from whealth.base import BaseControl, Failure
 
 if TYPE_CHECKING:
     from whealth.graph import DependencyNote
+    from whealth.runner import ControlRunner
 
 
 @dataclasses.dataclass(frozen=True)
@@ -387,7 +388,7 @@ class ControlRegistry:
         self.discovery = DiscoveryResult(errors=tuple(errors), notes=tuple(notes))
         return errors, notes
 
-    def get_runner(self):
+    def get_runner(self) -> ControlRunner:
         """Return a :class:`ControlRunner` bound to this registry."""
         from whealth.runner import ControlRunner
 

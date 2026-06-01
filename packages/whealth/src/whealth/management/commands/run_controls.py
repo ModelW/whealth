@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from django.core.management.base import BaseCommand, CommandError
 from django.utils.translation import gettext as _
@@ -10,7 +10,9 @@ from django.utils.translation import ngettext
 
 from whealth.auto_sentry import capture_exception
 from whealth.registry import ControlRegistry, get_control_registry
-from whealth.runner import ControlRunner, RunResult
+
+if TYPE_CHECKING:
+    from whealth.runner import ControlRunner, RunResult
 
 
 def _render_result(

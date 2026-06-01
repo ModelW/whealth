@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from whealth.base import Failure
+    from whealth.models import Incident
     from whealth.registry import ControlRegistry
 
 logger = logging.getLogger("whealth.runner")
@@ -128,17 +129,7 @@ class ControlRunner:
             cid = inc.control_id  # type: ignore[attr-defined]
             open_incidents[(cid, inc.key)] = inc
 
-        to_create: list[Incident] = []
-        to_close: list[Incident] = []
-
-        for pk, fkeys in failure_map.items():
-            for fkey in fkeys:
-                inc_key = (pk, fkey)
-                if inc_key not in open_incidents:
-                    to_create.append(Incident(control_id=pk, key=fkey, date_start=now))
-                else:
-                    del open_incidents[inc_key]
-
+        to_create, to_update_context = _diff_incidents(failure_map, open_incidents, now)
         to_close = list(open_incidents.values())
 
         results_serialised: dict[str, Any] = {}
@@ -159,6 +150,8 @@ class ControlRunner:
                 Incident.objects.filter(pk__in={i.pk for i in to_close}).update(
                     date_end=now
                 )
+            if to_update_context:
+                Incident.objects.bulk_update(to_update_context, ["context"])
             RunRecord.objects.create(
                 date_start=run_start,
                 hostname=socket.gethostname(),
@@ -171,6 +164,45 @@ class ControlRunner:
 # ---------------------------------------------------------------------------
 # Dependency-comparison helpers
 # ---------------------------------------------------------------------------
+
+
+def _diff_incidents(
+    failure_map: dict[int, dict[str, Any]],
+    open_incidents: dict[tuple[int, str], Incident],
+    now: Any,
+) -> tuple[list[Incident], list[Incident]]:
+    """Diff current failures against open incidents.
+
+    Returns a tuple of ``(to_create, to_update_context)``.  Incidents
+    whose keys match are popped from *open_incidents* so that whatever
+    remains can be closed.
+    """
+    from whealth.models import Incident
+
+    to_create: list[Incident] = []
+    to_update_context: list[Incident] = []
+
+    for pk, finfos in failure_map.items():
+        for fkey, fctx in finfos.items():
+            inc_key = (pk, fkey)
+            safe_ctx = fctx if fctx is not None else {}
+            if inc_key not in open_incidents:
+                to_create.append(
+                    Incident(
+                        control_id=pk,
+                        key=fkey,
+                        date_start=now,
+                        context=safe_ctx,
+                    )
+                )
+            else:
+                existing = open_incidents[inc_key]
+                if existing.context != safe_ctx:
+                    existing.context = safe_ctx
+                    to_update_context.append(existing)
+                del open_incidents[inc_key]
+
+    return to_create, to_update_context
 
 
 def _get_ignored_incident_keys() -> set[tuple[tuple[str, str], str]] | None:
@@ -227,8 +259,8 @@ def _any_dep_failed(
 def _build_failure_map(
     results: dict[tuple[str, str], RunResult],
     registry: ControlRegistry,
-) -> dict[int, set[str]]:
-    """Map control PKs to the set of failure keys from *results*."""
+) -> dict[int, dict[str, Any]]:
+    """Map control PKs to ``{failure_key: context}`` from *results*."""
     from whealth.models import Control as ControlModel
 
     controller_keys: set[tuple[str, str]] = set()
@@ -241,15 +273,15 @@ def _build_failure_map(
     ):
         pk_map[(row["app_label"], row["slug"])] = row["pk"]
 
-    failure_map: dict[int, set[str]] = {}
+    failure_map: dict[int, dict[str, Any]] = {}
     for key, result in results.items():
         if not isinstance(result, list):
             continue
         pk = pk_map.get(key)
         if pk is None:
             continue
-        fkeys: set[str] = set()
+        fmap: dict[str, Any] = {}
         for failure in result:
-            fkeys.add(failure.key)
-        failure_map[pk] = fkeys
+            fmap[failure.key] = failure.context
+        failure_map[pk] = fmap
     return failure_map

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from django.utils.timezone import now as django_now
+from whealth.base import Failure
 from whealth.models import Incident
 from whealth.registry import ControlInfo, ControlRegistry, Manifest
-from whealth.runner import ControlRunner
 from whospital_apps.models import KeyValue
+
+if TYPE_CHECKING:
+    from whealth.runner import ControlRunner
 
 pytestmark = [pytest.mark.django_db]
 
@@ -410,3 +415,78 @@ def test_sync_incidents_handles_db_error(
 
     assert len(calls) == 1
     assert isinstance(calls[0], RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# Failure context is persisted
+# ---------------------------------------------------------------------------
+
+
+def test_failure_context_saved_on_incident(
+    db_registry: ControlRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure's context is stored in the incident record."""
+    expected_context = {"message": "something broke", "code": 42}
+
+    alpha_ctrl = db_registry.controllers[("whospital_apps", "alpha")]
+    monkeypatch.setattr(
+        alpha_ctrl._instance,
+        "get_failures",
+        lambda: [Failure(key="alpha", outcome="error", context=expected_context)],
+    )
+
+    runner = db_registry.get_runner()
+    runner.run_and_sync()
+
+    inc = Incident.objects.get(control__slug="alpha")
+    assert inc.context == expected_context
+
+
+def test_failure_context_updated_on_existing_incident(
+    db_registry: ControlRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a failure's context changes, the existing incident is updated."""
+    alpha_ctrl = db_registry.controllers[("whospital_apps", "alpha")]
+    monkeypatch.setattr(
+        alpha_ctrl._instance,
+        "get_failures",
+        lambda: [Failure(key="alpha", outcome="error", context={"v": 1})],
+    )
+
+    runner = db_registry.get_runner()
+    runner.run_and_sync()
+
+    inc = Incident.objects.get(control__slug="alpha")
+    assert inc.context == {"v": 1}
+
+    monkeypatch.setattr(
+        alpha_ctrl._instance,
+        "get_failures",
+        lambda: [Failure(key="alpha", outcome="error", context={"v": 2})],
+    )
+
+    runner.run_and_sync()
+
+    inc.refresh_from_db()
+    assert inc.context == {"v": 2}
+
+
+def test_failure_none_context_defaults_to_empty_dict(
+    db_registry: ControlRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure with None context stores an empty dict."""
+    alpha_ctrl = db_registry.controllers[("whospital_apps", "alpha")]
+    monkeypatch.setattr(
+        alpha_ctrl._instance,
+        "get_failures",
+        lambda: [Failure(key="alpha", outcome="error", context=None)],
+    )
+
+    runner = db_registry.get_runner()
+    runner.run_and_sync()
+
+    inc = Incident.objects.get(control__slug="alpha")
+    assert inc.context == {}
