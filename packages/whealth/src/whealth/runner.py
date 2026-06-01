@@ -47,10 +47,14 @@ class ControlRunner:
 
         Controls whose dependencies produced ``error`` or
         ``internal_error`` failures are skipped and recorded as
-        ``False``.
+        ``False``.  Failures whose corresponding incidents have been
+        ignored in the database are *not* treated as blocking —
+        provided the database is reachable.
         """
         self.results.clear()
         self._run_started = django_now()
+
+        ignored_keys = _get_ignored_incident_keys() or set()
 
         graph: dict[tuple[str, str], list[tuple[str, str]]] = {}
         for controller in self.registry.controllers.values():
@@ -63,7 +67,7 @@ class ControlRunner:
             if ctrl is None:
                 continue
 
-            blocked = _any_dep_failed(graph.get(key, []), self.results)
+            blocked = _any_dep_failed(graph.get(key, []), self.results, ignored_keys)
             if blocked:
                 self.results[key] = False
                 continue
@@ -164,19 +168,53 @@ class ControlRunner:
             )
 
 
+# ---------------------------------------------------------------------------
+# Dependency-comparison helpers
+# ---------------------------------------------------------------------------
+
+def _get_ignored_incident_keys() -> set[tuple[tuple[str, str], str]] | None:
+    """Return the set of ``(control_key, failure_key)`` for incidents
+    that are currently ignored, or ``None`` if the database is unreachable.
+
+    When the DB is unreachable we fall back to strict blocking (return
+    ``None``) because we cannot tell which incidents are ignored.
+    """
+    from whealth.models import Incident
+
+    try:
+        ignored: set[tuple[tuple[str, str], str]] = set()
+        for inc in Incident.objects.filter(
+            date_end__isnull=True,
+            date_ignored__isnull=False,
+        ).select_related("control").iterator():
+            ignored.add(((inc.control.app_label, inc.control.slug), inc.key))
+        return ignored
+    except Exception:
+        logger.exception("Failed to fetch ignored incidents; using strict blocking.")
+        return None
+
+
 def _any_dep_failed(
     dep_keys: list[tuple[str, str]],
     results: dict[tuple[str, str], RunResult],
+    ignored_keys: set[tuple[tuple[str, str], str]] | None = None,
 ) -> bool:
-    """Return ``True`` if any dependency has an error or internal_error."""
+    """Return ``True`` if any dependency has an error or internal_error.
+
+    Failures whose incidents have been ignored in the database are
+    skipped, so an ignored dep cannot block its dependents.
+    """
     for dep_key in dep_keys:
         dep_result = results.get(dep_key)
         if dep_result is False:
             return True
         if isinstance(dep_result, list):
             for f in dep_result:
-                if f.outcome in ("error", "internal_error"):
-                    return True
+                if f.outcome not in ("error", "internal_error"):
+                    continue
+                if ignored_keys is not None and (dep_key, f.key) in ignored_keys:
+                    continue
+                return True
     return False
 
 
