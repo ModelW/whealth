@@ -127,6 +127,13 @@ def _evaluate_cron(cron: Cron) -> Failure | None:
                 consecutive_misses = 0
                 return None  # healthy — recent hit proves it
 
+            if (
+                slot.covered_by is not None
+                and slot.covered_by.state == "started"
+                and now < slot.covered_by.start + cron.max_runtime
+            ):
+                return None  # still in progress within max_runtime — clemency
+
             consecutive_misses += 1
 
             if consecutive_misses >= cron.failure_issue_threshold:
