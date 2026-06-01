@@ -104,7 +104,7 @@ class Command(BaseCommand):
             capture_exception(exc)
             self.stdout.write(self.style.WARNING(_("  DB sync failed, continuing...")))
 
-        runner = ControlRunner(registry=registry)
+        runner = registry.get_runner()
         runner.run_and_sync()
 
         _write_results(runner, registry, self)

@@ -80,7 +80,7 @@ def db_registry(registry: ControlRegistry) -> ControlRegistry:
 @pytest.fixture
 def runner(registry: ControlRegistry) -> ControlRunner:
     """Return a runner for the given registry (not yet run)."""
-    return ControlRunner(registry=registry)
+    return registry.get_runner()
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +220,7 @@ def test_exception_in_control_produces_internal_error(
 
 def test_empty_registry() -> None:
     """A runner with an empty registry produces no results."""
-    runner = ControlRunner(registry=ControlRegistry())
+    runner = ControlRegistry().get_runner()
     runner.run()
     assert runner.results == {}
 
@@ -257,7 +257,7 @@ def test_no_failures_creates_no_incidents(
     db_registry: ControlRegistry,
 ) -> None:
     """Passing controls produce no incidents."""
-    runner = ControlRunner(registry=db_registry)
+    runner = db_registry.get_runner()
     runner.run_and_sync()
     assert Incident.objects.count() == 0
     assert all(isinstance(v, list) for v in runner.results.values())
@@ -266,7 +266,7 @@ def test_no_failures_creates_no_incidents(
 def test_error_failure_creates_incident(db_registry: ControlRegistry) -> None:
     """An error on alpha creates an open incident."""
     _kv("alpha", "error")
-    runner = ControlRunner(registry=db_registry)
+    runner = db_registry.get_runner()
     runner.run_and_sync()
 
     incidents = Incident.objects.filter(control__slug="alpha")
@@ -283,7 +283,7 @@ def test_multiple_failures_create_separate_incidents(
 ) -> None:
     """A control with multiple failure keys creates one incident per key."""
     _kv("beta", "error")
-    runner = ControlRunner(registry=db_registry)
+    runner = db_registry.get_runner()
     runner.run_and_sync()
 
     incidents = Incident.objects.filter(control__slug="beta")
@@ -296,7 +296,7 @@ def test_blocked_controls_dont_create_incidents(
 ) -> None:
     """Controls that were blocked (False result) don't get incidents."""
     _kv("alpha", "error")
-    runner = ControlRunner(registry=db_registry)
+    runner = db_registry.get_runner()
     runner.run_and_sync()
 
     assert Incident.objects.filter(control__slug="alpha").count() == 1
@@ -307,7 +307,7 @@ def test_blocked_controls_dont_create_incidents(
 def test_resolved_failure_closes_incident(db_registry: ControlRegistry) -> None:
     """A previously failing control that passes closes the incident."""
     _kv("alpha", "error")
-    runner = ControlRunner(registry=db_registry)
+    runner = db_registry.get_runner()
     runner.run_and_sync()
     assert (
         Incident.objects.filter(control__slug="alpha", date_end__isnull=True).count()
@@ -326,7 +326,7 @@ def test_sync_does_not_close_blocked_incidents(
 ) -> None:
     """Incidents stay open even when a control is blocked."""
     _kv("beta", "error")
-    runner = ControlRunner(registry=db_registry)
+    runner = db_registry.get_runner()
     runner.run_and_sync()
 
     _kv("gamma", "error")
@@ -381,7 +381,7 @@ def test_control_exception_is_captured(
 
     _kv("alpha", "value_that_makes_utils_raise")
     registry.sync_to_db()
-    runner = ControlRunner(registry=registry)
+    runner = registry.get_runner()
     runner.run()
 
     assert len(calls) == 1
@@ -404,7 +404,7 @@ def test_sync_incidents_handles_db_error(
         lambda e, **kw: calls.append(e),  # type: ignore[arg-type]
     )
 
-    runner = ControlRunner(registry=registry)
+    runner = registry.get_runner()
     runner.run()
     runner.sync_incidents()
 

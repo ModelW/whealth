@@ -387,6 +387,12 @@ class ControlRegistry:
         self.discovery = DiscoveryResult(errors=tuple(errors), notes=tuple(notes))
         return errors, notes
 
+    def get_runner(self):
+        """Return a :class:`ControlRunner` bound to this registry."""
+        from whealth.runner import ControlRunner
+
+        return ControlRunner(registry=self)
+
     def sync_to_db(self) -> None:
         """Reflect the current set of discovered controllers into the DB.
 

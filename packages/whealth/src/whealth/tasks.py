@@ -24,7 +24,6 @@ except ImportError:
 if app is not None:
     from whealth.procrastinate import ProcrastinateCron, procrastinate_task
     from whealth.registry import get_control_registry
-    from whealth.runner import ControlRunner
 
     @procrastinate_task(
         app=app,
@@ -34,7 +33,9 @@ if app is not None:
     def run_controls(timestamp: int) -> None:
         """Run all registered controls and sync incidents."""
         registry = get_control_registry()
-        runner = ControlRunner(registry=registry)
+        registry.sync_to_db()
+
+        runner = registry.get_runner()
         runner.run_and_sync()
 
     @procrastinate_task(
