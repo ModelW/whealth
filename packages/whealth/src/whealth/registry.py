@@ -9,7 +9,7 @@ import logging
 import threading
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from django.apps import apps
@@ -88,6 +88,11 @@ class Controller:
         return self.info.manifest.is_ignorable
 
     @property
+    def impact(self) -> Literal["critical", "major", "minor"]:
+        """Impact level of this control."""
+        return self.info.manifest.impact
+
+    @property
     def key(self) -> tuple[str, str]:
         """Tuple identifier ``(app_label, slug)``."""
         return (self.info.app_label, self.info.slug)
@@ -118,6 +123,7 @@ class Manifest:
     depends_on: tuple[str, ...]
     title: str | None = None
     is_ignorable: bool = True
+    impact: Literal["critical", "major", "minor"] = "major"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -220,6 +226,11 @@ def _validate_manifest(pkg_dir: Path, module: str) -> Manifest | str:
                 case bool(is_ignorable):
                     pass
 
+            impact: Literal["critical", "major", "minor"] = "major"
+            match extra.get("impact"):
+                case "critical" | "major" | "minor" as i:
+                    impact = i
+
             # Auto-depend on database if ignorable, because the ignore feature
             # requires a database lookup.
             if is_ignorable and "whealth.database" not in deps:
@@ -229,6 +240,7 @@ def _validate_manifest(pkg_dir: Path, module: str) -> Manifest | str:
                 depends_on=tuple(deps),
                 title=title,
                 is_ignorable=is_ignorable,
+                impact=impact,
             )
         case _:
             return (
@@ -560,6 +572,9 @@ class ControlRegistry:
                 if row.description != description:
                     row.description = description
                     dirty = True
+                if row.impact != controller.impact:
+                    row.impact = controller.impact
+                    dirty = True
                 if dirty:
                     scalar_updates.append(row)
             else:
@@ -570,6 +585,7 @@ class ControlRegistry:
                         app_label=controller.app_label,
                         description=controller.info.readme,
                         active=True,
+                        impact=controller.impact,
                     )
                 )
 
@@ -577,7 +593,7 @@ class ControlRegistry:
             ControlModel.objects.bulk_create(creates)
         if scalar_updates:
             ControlModel.objects.bulk_update(
-                scalar_updates, ("title", "app_label", "description")
+                scalar_updates, ("title", "app_label", "description", "impact")
             )
 
     def _sync_activity(

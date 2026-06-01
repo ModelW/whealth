@@ -56,6 +56,15 @@ class RunRecord(models.Model):
         ),
         verbose_name=_("results"),
     )
+    impact = models.CharField(
+        max_length=16,
+        default="none",
+        help_text=_(
+            "Highest impact level among controls that failed in this run. "
+            "One of ``critical``, ``major``, ``minor``, or ``none``."
+        ),
+        verbose_name=_("impact"),
+    )
 
     class Meta:
         verbose_name = _("run record")
@@ -234,6 +243,15 @@ class Control(models.Model):
         default=True,
         help_text=_("Whether this control is still discovered by the registry."),
         verbose_name=_("active"),
+    )
+    impact = models.CharField(
+        max_length=16,
+        default="major",
+        help_text=_(
+            "Impact level of this control. "
+            "One of ``critical``, ``major``, or ``minor``."
+        ),
+        verbose_name=_("impact"),
     )
     depends_on = models.ManyToManyField(
         "self",

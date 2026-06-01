@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.contrib import admin
 from django.contrib.auth.decorators import permission_required
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
@@ -18,7 +19,10 @@ def recap(request: HttpRequest) -> HttpResponse:
     return render(
         request,
         "whealth/recap.html",
-        {"runner": get_control_registry().get_recent_run()},
+        {
+            "runner": get_control_registry().get_recent_run(),
+            "site_title": admin.site.site_title,
+        },
     )
 
 

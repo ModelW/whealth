@@ -21,26 +21,31 @@ _CONTROLS: dict[str, dict[str, object]] = {
         "module": "whospital_apps.controls.alpha",
         "deps": (),
         "title": None,
+        "impact": "critical",
     },
     "beta": {
         "module": "whospital_apps.controls.beta",
         "deps": ("alpha",),
         "title": None,
+        "impact": "major",
     },
     "gamma": {
         "module": "whospital_apps.controls.gamma",
         "deps": ("beta",),
         "title": None,
+        "impact": "minor",
     },
     "delta": {
         "module": "whospital_apps.controls.delta",
         "deps": ("alpha",),
         "title": None,
+        "impact": "major",
     },
     "epsilon": {
         "module": "whospital_apps.controls.epsilon",
         "deps": ("delta", "beta"),
         "title": None,
+        "impact": "minor",
     },
 }
 
@@ -70,7 +75,11 @@ def registry() -> ControlRegistry:
     for slug, meta in _CONTROLS.items():
         mod = __import__(meta["module"], fromlist=["Control"])
         app_label = meta["module"].split(".")[0]
-        manifest = Manifest(depends_on=meta["deps"], title=meta["title"])
+        manifest = Manifest(
+            depends_on=meta["deps"],  # type: ignore[arg-type]
+            title=meta["title"],  # type: ignore[arg-type]
+            impact=meta["impact"],  # type: ignore[arg-type]
+        )
         info = ControlInfo(
             app_label=app_label,
             slug=slug,
@@ -325,3 +334,78 @@ def test_sync_logic_with_database_control(db_registry: ControlRegistry) -> None:
     from whealth.models import RunRecord
 
     assert RunRecord.objects.count() > 0
+
+
+# ---------------------------------------------------------------------------
+# Impact reporting
+# ---------------------------------------------------------------------------
+
+
+def test_get_impact_none_when_all_pass(runner: ControlRunner) -> None:
+    """get_impact returns 'none' when no failures."""
+    runner._run()
+    assert runner.get_impact() == "none"
+
+
+def test_get_impact_returns_critical_for_critical_failure(
+    runner: ControlRunner,
+) -> None:
+    """A critical failure reports 'critical' impact."""
+    _kv("alpha", "error")
+    runner._run()
+    assert runner.get_impact() == "critical"
+
+
+def test_get_impact_returns_major_when_only_major_fails(
+    runner: ControlRunner,
+) -> None:
+    """A major failure reports 'major' impact."""
+    _kv("delta", "error")
+    runner._run()
+    assert runner.get_impact() == "major"
+
+
+def test_get_impact_returns_minor_when_only_minor_fails(
+    runner: ControlRunner,
+) -> None:
+    """A minor failure reports 'minor' impact."""
+    _kv("gamma", "error")
+    runner._run()
+    assert runner.get_impact() == "minor"
+
+
+def test_get_impact_returns_highest_impact_on_multiple_failures(
+    runner: ControlRunner,
+) -> None:
+    """When multiple impacts fail, the highest is returned."""
+    _kv("alpha", "error")  # critical
+    _kv("gamma", "error")  # minor
+    runner._run()
+    assert runner.get_impact() == "critical"
+
+
+def test_run_record_stores_impact(db_registry: ControlRegistry) -> None:
+    """run_and_sync persists the computed impact on the RunRecord."""
+    from whealth.models import RunRecord
+
+    _kv("alpha", "error")
+    runner = db_registry.get_runner()
+    runner.results[("whealth", "database")] = []
+    runner.run_and_sync()
+
+    record = RunRecord.objects.latest()
+    assert record.impact == "critical"
+
+
+def test_control_impact_synced_to_db(db_registry: ControlRegistry) -> None:
+    """sync_to_db persists each control's impact."""
+    from whealth.models import Control as ControlModel
+
+    impacts = dict(
+        ControlModel.objects.filter(app_label="whospital_apps").values_list(
+            "slug", "impact"
+        )
+    )
+    assert impacts["alpha"] == "critical"
+    assert impacts["beta"] == "major"
+    assert impacts["gamma"] == "minor"

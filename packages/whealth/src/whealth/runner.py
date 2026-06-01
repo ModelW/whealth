@@ -31,6 +31,8 @@ type RunResult = list[Failure] | Literal[False]
   failed with an ``error`` or ``internal_error`` outcome.
 """
 
+_IMPACT_ORDER: dict[str, int] = {"none": 0, "minor": 1, "major": 2, "critical": 3}
+
 
 @dataclasses.dataclass
 class ControlRunner:
@@ -272,7 +274,29 @@ class ControlRunner:
             hostname=self.hostname,
             cli=" ".join(quote(arg) for arg in sys.argv),
             results=self.results_json,
+            impact=self.get_impact(),
         )
+
+    def get_impact(self) -> Literal["critical", "major", "minor", "none"]:
+        """Return the highest impact among controls that have failures.
+
+        Ignored failures are already dropped from the results at run time,
+        so any non-empty failure list contributes its control's impact.
+        Returns ``"none"`` if no control reported failures.
+        """
+        impacts: list[Literal["critical", "major", "minor"]] = []
+
+        for key, result in self.results.items():
+            if not isinstance(result, list) or not result:
+                continue
+
+            if ctrl := self.registry.controllers.get(key):
+                impacts.append(ctrl.impact)
+
+        if not impacts:
+            return "none"
+
+        return max(impacts, key=lambda i: _IMPACT_ORDER[i])
 
     def is_control_ok(self, app_label: str, slug: str) -> bool:
         """Return True if the control is considered OK (not failed)."""

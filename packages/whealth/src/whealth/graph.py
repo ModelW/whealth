@@ -108,6 +108,7 @@ def resolve_dependencies(
             depends_on=tuple(safe_deps),
             title=c.manifest.title,
             is_ignorable=c.manifest.is_ignorable,
+            impact=c.manifest.impact,
         )
         safe_controls.append(
             ControlInfo(

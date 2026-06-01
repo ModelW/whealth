@@ -1,2 +1,3 @@
 title: Cache Connection
 depends_on: []
+impact: critical
