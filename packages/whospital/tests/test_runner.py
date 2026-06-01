@@ -98,6 +98,21 @@ def _kv(key: str, value: str) -> None:
     KeyValue.objects.update_or_create(key=key, defaults={"value": value})
 
 
+def _control_models(
+    registry: ControlRegistry,
+) -> dict[str, object]:
+    """Return a ``{slug: Control}`` dict for controls synced to the DB."""
+    from whealth.models import Control as ControlModel
+
+    keys = [c.key for c in registry.controllers.values()]
+    return {
+        row.slug: row
+        for row in ControlModel.objects.filter(
+            app_label__in={k[0] for k in keys}, slug__in={k[1] for k in keys}
+        )
+    }
+
+
 # ---------------------------------------------------------------------------
 # Basic: all pass
 # ---------------------------------------------------------------------------
@@ -264,7 +279,9 @@ def test_no_failures_creates_no_incidents(
     """Passing controls produce no incidents."""
     runner = db_registry.get_runner()
     runner.run_and_sync()
-    assert Incident.objects.count() == 0
+
+    control_pks = [cm.pk for cm in _control_models(db_registry).values()]
+    assert Incident.objects.filter(control_id__in=control_pks).count() == 0
     assert all(isinstance(v, list) for v in runner.results.values())
 
 

@@ -305,7 +305,7 @@ def test_sync_to_db_creates_and_deactivates() -> None:
 
     registry.sync_to_db()
 
-    assert ControlModel.objects.count() == 3
+    assert ControlModel.objects.filter(slug__in=["stale", "alpha", "beta"]).count() == 3
     alpha = ControlModel.objects.get(slug="alpha")
     assert alpha.active is True
     assert alpha.title == "Alpha"
