@@ -106,7 +106,7 @@ def control_detail(request: HttpRequest, app: str, slug: str) -> JsonResponse:
     """Return JSON with ok status for a single control from the last run."""
     latest, ignored = _latest_run_with_ignored()
     if latest is None:
-        return JsonResponse({"ok": False}, status=503)
+        return JsonResponse({"ok": False}, status=418)
 
     label = f"{app}.{slug}"
     result = latest.results.get(label)
@@ -114,16 +114,16 @@ def control_detail(request: HttpRequest, app: str, slug: str) -> JsonResponse:
         return JsonResponse({"ok": False}, status=404)
 
     ok = _is_ok(label, result, ignored)
-    return JsonResponse({"ok": ok}, status=200 if ok else 503)
+    return JsonResponse({"ok": ok}, status=200 if ok else 418)
 
 
 def control_list(request: HttpRequest) -> JsonResponse:
     """Return JSON with ok status for all controls from the last run."""
     latest, ignored = _latest_run_with_ignored()
     if latest is None:
-        return JsonResponse({"ok": False}, status=503)
+        return JsonResponse({"ok": False}, status=418)
 
     all_ok = all(
         _is_ok(label, result, ignored) for label, result in latest.results.items()
     )
-    return JsonResponse({"ok": all_ok}, status=200 if all_ok else 503)
+    return JsonResponse({"ok": all_ok}, status=200 if all_ok else 418)
