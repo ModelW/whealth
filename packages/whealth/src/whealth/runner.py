@@ -6,20 +6,19 @@ import dataclasses
 import logging
 import socket
 import sys
+from dataclasses import asdict
+from shlex import quote
 from typing import TYPE_CHECKING, Any, Literal
 
-from django.db import transaction
-from django.utils.timezone import now as django_now
+from django.utils import timezone
 
-from whealth.auto_sentry import capture_exception
-from whealth.graph import topological_sort
+from whealth.base import Failure
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    import datetime
 
-    from whealth.base import Failure
-    from whealth.models import Incident
-    from whealth.registry import ControlRegistry
+    from whealth.registry import Controller, ControlRegistry
+
 
 logger = logging.getLogger("whealth.runner")
 
@@ -38,250 +37,186 @@ class ControlRunner:
     """Executes all controls from a registry in topological order."""
 
     registry: ControlRegistry
+    """The registry that created us"""
+
     results: dict[tuple[str, str], RunResult] = dataclasses.field(
         default_factory=dict, init=False
     )
-    _run_started: datetime | None = dataclasses.field(default=None, init=False)
+    """Cached results of the run"""
 
-    def run(self) -> None:
-        """Execute every registered control in dependency order.
-
-        Controls whose dependencies produced ``error`` or
-        ``internal_error`` failures are skipped and recorded as
-        ``False``.  Failures whose corresponding incidents have been
-        ignored in the database are *not* treated as blocking —
-        provided the database is reachable.
-        """
-        self.results.clear()
-        self._run_started = django_now()
-
-        ignored_keys = _get_ignored_incident_keys() or set()
-
-        graph: dict[tuple[str, str], list[tuple[str, str]]] = {}
-        for controller in self.registry.controllers.values():
-            graph[controller.key] = list(controller.depends_on)
-
-        order = topological_sort(graph)
-
-        for key in order:
-            ctrl = self.registry.controllers.get(key)
-            if ctrl is None:
-                continue
-
-            blocked = _any_dep_failed(graph.get(key, []), self.results, ignored_keys)
-            if blocked:
-                self.results[key] = False
-                continue
-
-            try:
-                failures = ctrl.get_failures()
-            except Exception as exc:
-                capture_exception(exc)
-                from whealth.base import Failure as F
-
-                failures = [F(key="_internal", outcome="internal_error")]
-
-            self.results[key] = failures
+    @property
+    def results_json(self) -> dict[str, Any]:
+        """Shortcut to serialize results as JSON."""
+        return {
+            ".".join(k): [asdict(f) for f in v] if isinstance(v, list) else v
+            for k, v in self.results.items()
+        }
 
     def run_and_sync(self) -> None:
-        """Run all controls and sync results into the database.
+        """Run the full process and saves it into DB.
 
-        Calls :meth:`run` and then :meth:`sync_incidents` to create and
-        close :class:`~whealth.models.Incident` rows for each control
-        failure.  If the sync fails (e.g. database unavailable) the
-        error is captured via Sentry and logged — the in-memory results
-        are preserved.
+        There is a first built-in check to see if the database connection works
+        properly. If not, we're simply failing right away, without saving
+        anything (because there is nothing to save it to).
         """
-        self.run()
-        self.sync_incidents()
+        start, end = self._run()
 
-    def sync_incidents(self) -> None:
-        """Create incidents for new failures and close resolved ones.
+        if self.results[("whealth", "database")] == []:
+            self.registry.sync_to_db()
+            self._upsert_incidents()
+            self._save_run(start, end)
 
-        For each controller key with a ``list[Failure]`` result:
-        - Open incidents whose ``(control, key)`` no longer appear in
-          the failures are closed (``date_end`` set to now).
-        - New failures not yet covered by an open incident get a new
-          incident record created.
+    def _run(self) -> tuple[datetime.datetime, datetime.datetime]:
+        start = timezone.now()
 
-        Controls that were blocked (``False`` result) or not present
-        in the results are ignored — incidents stay open.
+        for controller in self.registry.get_sorted_controls():
+            self._run_one_control(controller)
+
+        end = timezone.now()
+
+        return start, end
+
+    def _run_one_control(self, controller: Controller) -> None:
+        """Run one specific control.
+
+        Taking into account the following rules:
+
+        - To ignore it if dependencies failed
+        - And to drop ignored failures if the control is ignorable
         """
+        from whealth.auto_sentry import capture_exception
+
         try:
-            self._sync_incidents()
+            failures = controller.get_failures()
         except Exception as exc:
             capture_exception(exc)
-            logger.exception("Failed to sync incidents to the database.")
-
-    def _sync_incidents(self) -> None:
-        """Inner implementation of incident sync."""
-        from whealth.models import Incident, RunRecord
-
-        now = django_now()
-        failure_map = _build_failure_map(self.results, self.registry)
-        pks = list(failure_map.keys())
-
-        open_incidents: dict[tuple[int, str], Incident] = {}
-        for inc in Incident.objects.filter(
-            control_id__in=pks,
-            date_end__isnull=True,
-        ):
-            cid = inc.control_id  # type: ignore[attr-defined]
-            open_incidents[(cid, inc.key)] = inc
-
-        to_create, to_update_context = _diff_incidents(failure_map, open_incidents, now)
-        to_close = list(open_incidents.values())
-
-        results_serialised: dict[str, Any] = {}
-        for key, result in self.results.items():
-            label = f"{key[0]}.{key[1]}"
-            if result is False:
-                results_serialised[label] = None
-            else:
-                results_serialised[label] = [dataclasses.asdict(f) for f in result]
-
-        run_start = self._run_started or now
-        run_duration = now - run_start if self._run_started else None
-
-        with transaction.atomic():
-            if to_create:
-                Incident.objects.bulk_create(to_create)
-            if to_close:
-                Incident.objects.filter(pk__in={i.pk for i in to_close}).update(
-                    date_end=now
+            failures = [
+                Failure(
+                    key=controller.slug,
+                    outcome="internal_error",
+                    context={"exception": str(exc)},
                 )
-            if to_update_context:
-                Incident.objects.bulk_update(to_update_context, ["context"])
-            RunRecord.objects.create(
-                date_start=run_start,
-                hostname=socket.gethostname(),
-                cli=" ".join(sys.argv),
-                duration=run_duration,
-                results=results_serialised,
-            )
+            ]
 
+        for dependency in controller.depends_on:
+            match self.results[dependency]:
+                case False:
+                    self.results[controller.key] = False
+                    return
+                case list(dep_failures):
+                    if any(
+                        f.outcome in ("error", "internal_error") for f in dep_failures
+                    ):
+                        self.results[controller.key] = False
+                        return
 
-# ---------------------------------------------------------------------------
-# Dependency-comparison helpers
-# ---------------------------------------------------------------------------
+        if controller.is_ignorable:
+            failures = self._drop_ignored(controller.key, failures)
 
+        self.results[controller.key] = failures
 
-def _diff_incidents(
-    failure_map: dict[int, dict[str, Any]],
-    open_incidents: dict[tuple[int, str], Incident],
-    now: Any,
-) -> tuple[list[Incident], list[Incident]]:
-    """Diff current failures against open incidents.
+    def _drop_ignored(
+        self, control_id: tuple[str, str], failures: list[Failure]
+    ) -> list[Failure]:
+        """Drop ignored failures from a control's result.
 
-    Returns a tuple of ``(to_create, to_update_context)``.  Incidents
-    whose keys match are popped from *open_incidents* so that whatever
-    remains can be closed.
-    """
-    from whealth.models import Incident
+        Incidents can be ignored through the database. In order to do that in a
+        way that isn't too slow, we're filtering out potentially active
+        incidents, and we check if within this we can find an ignore notice.
+        """
+        from .models import Incident
 
-    to_create: list[Incident] = []
-    to_update_context: list[Incident] = []
-
-    for pk, finfos in failure_map.items():
-        for fkey, fctx in finfos.items():
-            inc_key = (pk, fkey)
-            safe_ctx = fctx if fctx is not None else {}
-            if inc_key not in open_incidents:
-                to_create.append(
-                    Incident(
-                        control_id=pk,
-                        key=fkey,
-                        date_start=now,
-                        context=safe_ctx,
-                    )
-                )
-            else:
-                existing = open_incidents[inc_key]
-                if existing.context != safe_ctx:
-                    existing.context = safe_ctx
-                    to_update_context.append(existing)
-                del open_incidents[inc_key]
-
-    return to_create, to_update_context
-
-
-def _get_ignored_incident_keys() -> set[tuple[tuple[str, str], str]] | None:
-    """Return the set of ``(control_key, failure_key)`` for ignored incidents.
-
-    Returns the set of ``(control_key, failure_key)`` for incidents that
-    are currently ignored (``date_ignored IS NOT NULL`` and still open).
-    Returns ``None`` if the database is unreachable, in which case the
-    runner falls back to strict blocking.
-    """
-    from whealth.models import Incident
-
-    try:
-        ignored: set[tuple[tuple[str, str], str]] = set()
-        for inc in (
+        ignored = set(
             Incident.objects.filter(
-                date_end__isnull=True,
+                control__slug=control_id[1],
+                control__app_label=control_id[0],
+                key__in=list(set(f.key for f in failures)),
                 date_ignored__isnull=False,
+            ).values_list("key", flat=True)
+        )
+
+        return [f for f in failures if f.key not in ignored]
+
+    def _upsert_incidents(self) -> None:
+        """Update the database with the latest incidents."""
+        from .models import Control, Incident
+
+        now = timezone.now()
+
+        context_mapping, db_mapping, to_close, to_insert = self._diff_incidents()
+
+        control_map = {
+            (control.app_label, control.slug): control
+            for control in Control.objects.all()
+        }
+
+        if to_insert:
+            Incident.objects.bulk_create(
+                [
+                    Incident(
+                        date_start=now,
+                        control=control_map[(app_label, slug)],
+                        key=key,
+                        context=context_mapping[(app_label, slug, key)] or {},
+                    )
+                    for (app_label, slug, key) in to_insert
+                ],
+                ignore_conflicts=True,
             )
-            .select_related("control")
-            .iterator()
-        ):
-            ignored.add(((inc.control.app_label, inc.control.slug), inc.key))
-        return ignored
-    except Exception:
-        logger.exception("Failed to fetch ignored incidents; using strict blocking.")
-        return None
 
+        if to_close:
+            Incident.objects.filter(
+                pk__in=list(db_mapping[k] for k in to_close)
+            ).update(date_end=now)
 
-def _any_dep_failed(
-    dep_keys: list[tuple[str, str]],
-    results: dict[tuple[str, str], RunResult],
-    ignored_keys: set[tuple[tuple[str, str], str]] | None = None,
-) -> bool:
-    """Return ``True`` if any dependency has an error or internal_error.
+    def _diff_incidents(
+        self,
+    ) -> tuple[
+        dict[tuple[str, str, str], Any],
+        dict[tuple[str, str, str], int],
+        set[tuple[str, str, str]],
+        set[tuple[str, str, str]],
+    ]:
+        """Compute the diff between DB and results."""
+        from .models import Incident
 
-    Failures whose incidents have been ignored in the database are
-    skipped, so an ignored dep cannot block its dependents.
-    """
-    for dep_key in dep_keys:
-        dep_result = results.get(dep_key)
-        if dep_result is False:
-            return True
-        if isinstance(dep_result, list):
-            for f in dep_result:
-                if f.outcome not in ("error", "internal_error"):
-                    continue
-                if ignored_keys is not None and (dep_key, f.key) in ignored_keys:
-                    continue
-                return True
-    return False
+        active_incidents = Incident.objects.filter(
+            date_end__isnull=True,
+            date_ignored__isnull=True,
+        ).values("pk", "control__slug", "control__app_label", "key")
 
+        db_mapping: dict[tuple[str, str, str], int] = dict()
 
-def _build_failure_map(
-    results: dict[tuple[str, str], RunResult],
-    registry: ControlRegistry,
-) -> dict[int, dict[str, Any]]:
-    """Map control PKs to ``{failure_key: context}`` from *results*."""
-    from whealth.models import Control as ControlModel
+        for row in active_incidents:
+            db_mapping[
+                (row["control__app_label"], row["control__slug"], row["key"])
+            ] = row["pk"]
 
-    controller_keys: set[tuple[str, str]] = set()
-    for controller in registry.controllers.values():
-        controller_keys.add(controller.key)
+        is_in_db = set(db_mapping.keys())
+        is_in_results = set()
+        context_mapping: dict[tuple[str, str, str], Any] = dict()
 
-    pk_map: dict[tuple[str, str], int] = {}
-    for row in ControlModel.objects.filter(active=True).values(
-        "pk", "slug", "app_label"
-    ):
-        pk_map[(row["app_label"], row["slug"])] = row["pk"]
+        for (app_label, slug), failures in self.results.items():
+            if not failures:
+                continue
 
-    failure_map: dict[int, dict[str, Any]] = {}
-    for key, result in results.items():
-        if not isinstance(result, list):
-            continue
-        pk = pk_map.get(key)
-        if pk is None:
-            continue
-        fmap: dict[str, Any] = {}
-        for failure in result:
-            fmap[failure.key] = failure.context
-        failure_map[pk] = fmap
-    return failure_map
+            for failure in failures:
+                is_in_results.add((app_label, slug, failure.key))
+                context_mapping[(app_label, slug, failure.key)] = failure.context
+
+        to_insert = is_in_results - is_in_db
+        to_close = is_in_db - is_in_results
+
+        return context_mapping, db_mapping, to_close, to_insert
+
+    def _save_run(self, start: datetime.datetime, end: datetime.datetime) -> None:
+        from .models import RunRecord
+
+        RunRecord.objects.create(
+            date_start=start,
+            date_end=end,
+            duration=end - start,
+            hostname=socket.gethostname(),
+            cli=" ".join(quote(arg) for arg in sys.argv),
+            results=self.results_json,
+        )

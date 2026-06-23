@@ -95,7 +95,9 @@ def test_valid_bleeps_control() -> None:
         assert info.control_class.__name__ == "Control"
 
 
-@pytest.mark.control(manifest="depends_on: []\n", readme="# fine\n")
+@pytest.mark.control(
+    manifest="depends_on: []\nis_ignorable: false\n", readme="# fine\n"
+)
 def test_valid_tmp_control(tmp_control: str) -> None:
     """A minimally valid temp control loads successfully."""
     info = attempt_load(tmp_control, app_label="test")

@@ -81,4 +81,14 @@ class BaseControl(ABC):
 
     @abstractmethod
     def get_failures(self) -> list[Failure]:
-        """Run the control check and return zero or more failures."""
+        """Run the control check and return zero or more failures.
+
+        If you are going to be returning potentially many failures, make sure to
+        cap the number of potential items that you can return:
+
+        - Limit to 100 items or so (if you need to be dealing with more items
+          manually you probably need to find the root cause of the issue before
+          moving forward)
+        - Make sure that the order of failures is stable so that the output of
+          this function is usefully comparable across runs.
+        """

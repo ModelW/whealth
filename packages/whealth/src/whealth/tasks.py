@@ -31,11 +31,7 @@ if app is not None:
     )
     def run_controls(timestamp: int) -> None:
         """Run all registered controls and sync incidents."""
-        registry = get_control_registry()
-        registry.sync_to_db()
-
-        runner = registry.get_runner()
-        runner.run_and_sync()
+        get_control_registry().get_runner().run_and_sync()
 
     @procrastinate_task(
         app=app,

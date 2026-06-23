@@ -8,7 +8,6 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils.translation import gettext as _
 from django.utils.translation import ngettext
 
-from whealth.auto_sentry import capture_exception
 from whealth.registry import ControlRegistry, get_control_registry
 
 if TYPE_CHECKING:
@@ -99,12 +98,6 @@ class Command(BaseCommand):
             )
             % {"count": total}
         )
-
-        try:
-            registry.sync_to_db()
-        except Exception as exc:
-            capture_exception(exc)
-            self.stdout.write(self.style.WARNING(_("  DB sync failed, continuing...")))
 
         runner = registry.get_runner()
         runner.run_and_sync()

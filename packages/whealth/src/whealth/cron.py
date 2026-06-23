@@ -116,7 +116,7 @@ class CheckinManager:
             close_old_connections()
 
     # ------------------------------------------------------------------
-    # Public API  —  called from the **caller's** thread
+    # Public API — called from the **caller's** thread
     # ------------------------------------------------------------------
 
     def check_in(

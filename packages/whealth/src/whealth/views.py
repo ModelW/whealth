@@ -8,7 +8,7 @@ from django.contrib.auth.decorators import permission_required
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 
-from whealth.models import Control, Incident, RunRecord
+from whealth.models import Control, RunRecord
 
 
 def _human_duration(duration: Any) -> str:
@@ -24,39 +24,17 @@ def _human_duration(duration: Any) -> str:
     return f"{total_sec // 60}m {total_sec % 60}s"
 
 
-def _latest_run_with_ignored() -> tuple[RunRecord | None, set[str]]:
-    """Return the most recent run and the set of ignored control keys."""
-    run = RunRecord.objects.order_by("-date_start").first()
-    ignored = set(
-        Incident.objects.filter(
-            date_end__isnull=True, date_ignored__isnull=False
-        ).values_list("control__app_label", "control__slug")
-    )
-    return run, {f"{app}.{slug}" for app, slug in ignored}
+def _is_ok(result: Any) -> bool:
+    """Return True if the control result is passing.
 
-
-def _is_ok(label: str, result: Any, ignored: set[str]) -> bool:
-    """Return True if the control result is passing or its failures are ignored.
-
-    ``result is None`` means the control was blocked by a dependency —
+    ``result is False`` means the control was blocked by a dependency —
     its own check never ran, so it is considered ok.
     """
-    if result is None:
+    if result is False:
         return True
     if not result:
         return True
-    if label in ignored:
-        return True
     return not any(f.get("outcome") in ("error", "internal_error") for f in result)
-
-
-def _filter_ignored(label: str, result: Any, ignored: set[str]) -> list[dict[str, Any]]:
-    """Return failures with ignored incidents removed. Returns empty list for pass."""
-    if not isinstance(result, list):
-        return []
-    if label not in ignored:
-        return result
-    return []
 
 
 @permission_required(
@@ -65,7 +43,7 @@ def _filter_ignored(label: str, result: Any, ignored: set[str]) -> list[dict[str
 )
 def recap(request: HttpRequest) -> HttpResponse:
     """Display a table with the recap of the most recent run."""
-    latest, ignored = _latest_run_with_ignored()
+    latest = RunRecord.objects.order_by("-date_start").first()
     rows: list[dict[str, Any]] = []
 
     if latest is not None:
@@ -76,11 +54,9 @@ def recap(request: HttpRequest) -> HttpResponse:
             except Control.DoesNotExist:
                 control = None
 
-            failures = _filter_ignored(label, result, ignored)
-
-            if result is None:
+            if result is False:
                 status = "blocked"
-            elif not failures:
+            elif not result:
                 status = "pass"
             else:
                 status = "fail"
@@ -91,7 +67,7 @@ def recap(request: HttpRequest) -> HttpResponse:
                     "title": control.title if control else slug,
                     "app_label": app_label,
                     "status": status,
-                    "failures": failures,
+                    "failures": result if isinstance(result, list) else [],
                 }
             )
 
@@ -108,26 +84,24 @@ def recap(request: HttpRequest) -> HttpResponse:
 
 def control_detail(request: HttpRequest, app: str, slug: str) -> JsonResponse:
     """Return JSON with ok status for a single control from the last run."""
-    latest, ignored = _latest_run_with_ignored()
+    latest = RunRecord.objects.order_by("-date_start").first()
     if latest is None:
         return JsonResponse({"ok": False}, status=418)
 
     label = f"{app}.{slug}"
     result = latest.results.get(label)
-    if result is None:
+    if result is False:
         return JsonResponse({"ok": True}, status=200)
 
-    ok = _is_ok(label, result, ignored)
+    ok = _is_ok(result)
     return JsonResponse({"ok": ok}, status=200 if ok else 418)
 
 
 def control_list(request: HttpRequest) -> JsonResponse:
     """Return JSON with ok status for all controls from the last run."""
-    latest, ignored = _latest_run_with_ignored()
+    latest = RunRecord.objects.order_by("-date_start").first()
     if latest is None:
         return JsonResponse({"ok": False}, status=418)
 
-    all_ok = all(
-        _is_ok(label, result, ignored) for label, result in latest.results.items()
-    )
+    all_ok = all(_is_ok(result) for result in latest.results.values())
     return JsonResponse({"ok": all_ok}, status=200 if all_ok else 418)

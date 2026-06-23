@@ -75,6 +75,11 @@ class Controller:
         return deps
 
     @property
+    def is_ignorable(self) -> bool:
+        """Whether the wrapped control is ignorable."""
+        return self.info.manifest.is_ignorable
+
+    @property
     def key(self) -> tuple[str, str]:
         """Tuple identifier ``(app_label, slug)``."""
         return (self.info.app_label, self.info.slug)
@@ -100,6 +105,7 @@ class Manifest:
 
     depends_on: tuple[str, ...]
     title: str | None = None
+    is_ignorable: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -179,9 +185,11 @@ def _validate_manifest(pkg_dir: Path, module: str) -> Manifest | str:
     raw = _read_file(pkg_dir / "manifest.yaml")
     if raw is None:
         return f"Control {module!r} is missing manifest.yaml."
+
     manifest = _parse_yaml(raw)
     if manifest is None:
         return f"Control {module!r} has an invalid or empty manifest.yaml."
+
     match manifest:
         case {"depends_on": list(deps), **extra}:
             if not all(isinstance(d, str) for d in deps):
@@ -189,13 +197,27 @@ def _validate_manifest(pkg_dir: Path, module: str) -> Manifest | str:
                     f"Control {module!r} manifest.yaml 'depends_on' "
                     f"contains non-string entries."
                 )
+
             title: str | None = None
             match extra.get("title"):
-                case str(t):
-                    title = t
-                case _:
+                case str(title):
                     pass
-            return Manifest(depends_on=tuple(deps), title=title)
+
+            is_ignorable: bool = True
+            match extra.get("is_ignorable"):
+                case bool(is_ignorable):
+                    pass
+
+            # Auto-depend on database if ignorable, because the ignore feature
+            # requires a database lookup.
+            if is_ignorable and "whealth.database" not in deps:
+                deps.append("whealth.database")
+
+            return Manifest(
+                depends_on=tuple(deps),
+                title=title,
+                is_ignorable=is_ignorable,
+            )
         case _:
             return (
                 f"Control {module!r} manifest.yaml must contain a "
@@ -393,6 +415,32 @@ class ControlRegistry:
         from whealth.runner import ControlRunner
 
         return ControlRunner(registry=self)
+
+    def get_sorted_controls(self) -> list[Controller]:
+        """Return registered controllers in topological order.
+
+        Dependencies are guaranteed to appear before their dependents.
+        """
+        graph = {c.key: c.depends_on for c in self.controllers.values()}
+        in_degree: dict[tuple[str, str], int] = {
+            n: len(deps) for n, deps in graph.items()
+        }
+
+        queue = [n for n, d in in_degree.items() if d == 0]
+        order: list[tuple[str, str]] = []
+        while queue:
+            node = queue.pop(0)
+            order.append(node)
+            for parent, deps in graph.items():
+                if node in deps:
+                    in_degree[parent] -= 1
+                    if in_degree[parent] == 0:
+                        queue.append(parent)
+
+        remaining = [n for n, d in in_degree.items() if d > 0]
+        order.extend(remaining)
+
+        return [self.controllers[key] for key in order]
 
     def sync_to_db(self) -> None:
         """Reflect the current set of discovered controllers into the DB.
