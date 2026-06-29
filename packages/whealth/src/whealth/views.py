@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
 from django.contrib.auth.decorators import permission_required
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 
 from whealth.models import Control, RunRecord
+
+if TYPE_CHECKING:
+    from whealth.runner import ControlRunner
+
+logger = logging.getLogger("whealth.views")
 
 
 def _human_duration(duration: Any) -> str:
@@ -82,26 +88,47 @@ def recap(request: HttpRequest) -> HttpResponse:
     )
 
 
+def _get_runner_for(key: tuple[str, str] | None = None) -> ControlRunner:
+    """Return the runner for a control."""
+    latest = RunRecord.objects.order_by("-date_start").first()
+
+    if latest is None:
+        msg = "No run record found"
+        raise Http404(msg)
+
+    if key and f"{key[0]}.{key[1]}" not in latest.results:
+        msg = "Control not found"
+        raise Http404(msg)
+
+    return latest.get_runner()
+
+
 def control_detail(request: HttpRequest, app: str, slug: str) -> JsonResponse:
     """Return JSON with ok status for a single control from the last run."""
-    latest = RunRecord.objects.order_by("-date_start").first()
-    if latest is None:
-        return JsonResponse({"ok": False}, status=418)
-
-    label = f"{app}.{slug}"
-    result = latest.results.get(label)
-    if result is False:
-        return JsonResponse({"ok": True}, status=200)
-
-    ok = _is_ok(result)
+    runner = _get_runner_for((app, slug))
+    ok = runner.is_control_ok(app, slug)
     return JsonResponse({"ok": ok}, status=200 if ok else 418)
 
 
 def control_list(request: HttpRequest) -> JsonResponse:
     """Return JSON with ok status for all controls from the last run."""
-    latest = RunRecord.objects.order_by("-date_start").first()
-    if latest is None:
-        return JsonResponse({"ok": False}, status=418)
-
-    all_ok = all(_is_ok(result) for result in latest.results.values())
+    runner = _get_runner_for()
+    all_ok = runner.is_ok()
     return JsonResponse({"ok": all_ok}, status=200 if all_ok else 418)
+
+
+def control_deep(request: HttpRequest, app: str, slug: str) -> JsonResponse:
+    """Return JSON with ok status for a single control, only if it is OK.
+
+    Returns 418 if the control was skipped.
+    """
+    runner = _get_runner_for((app, slug))
+    ok = runner.is_control_deep_ok(app, slug)
+    return JsonResponse({"ok": ok}, status=200 if ok else 418)
+
+
+def should_restart(request: HttpRequest, service: str) -> JsonResponse:
+    """Return whether restarting a specific service will resolve active issues."""
+    runner = _get_runner_for()
+    should = runner.should_restart_service(service)
+    return JsonResponse({"should_restart": should}, status=418 if should else 200)

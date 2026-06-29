@@ -52,6 +52,36 @@ class ControlRunner:
             for k, v in self.results.items()
         }
 
+    @classmethod
+    def from_results(
+        cls, results_json: dict[str, Any], registry: ControlRegistry
+    ) -> ControlRunner:
+        """Re-hydrate a ControlRunner instance from serialized results JSON."""
+        from whealth.base import Failure
+
+        runner = cls(registry=registry)
+
+        results_map: dict[tuple[str, str], RunResult] = {}
+        for label, val in results_json.items():
+            app_label, slug = label.split(".", 1)
+            key = (app_label, slug)
+            if val is False:
+                results_map[key] = False
+            elif isinstance(val, list):
+                results_map[key] = [
+                    Failure(
+                        key=item["key"],
+                        outcome=item["outcome"],
+                        context=item.get("context"),
+                    )
+                    for item in val
+                ]
+            else:
+                results_map[key] = val
+
+        runner.results = results_map
+        return runner
+
     def run_and_sync(self) -> None:
         """Run the full process and saves it into DB.
 
@@ -220,3 +250,47 @@ class ControlRunner:
             cli=" ".join(quote(arg) for arg in sys.argv),
             results=self.results_json,
         )
+
+    def is_control_ok(self, app_label: str, slug: str) -> bool:
+        """Return True if the control is considered OK (not failed)."""
+        result = self.results[(app_label, slug)]
+
+        if isinstance(result, list):
+            return not any(f.outcome in ("error", "internal_error") for f in result)
+        else:
+            return True
+
+    def is_control_deep_ok(self, app_label: str, slug: str) -> bool:
+        """Return True if the control and all of its ancestors are OK."""
+        key = (app_label, slug)
+        ancestors = self.registry.get_ancestors(key)
+        return all(self.is_control_ok(*ancestor) for ancestor in ancestors | {key})
+
+    def should_restart_service(self, service: str) -> bool:
+        """Check if any failed control recommends restarting the specified service."""
+        from whealth import RestartRemediation
+
+        for app_label, slug in self.results.keys():
+            if self.is_control_ok(app_label, slug):
+                continue
+
+            if not (controller := self.registry.get(app_label, slug)):
+                msg = f"Control {app_label}.{slug} not found in registry"
+                raise KeyError(msg)
+
+            results = self.results[(app_label, slug)]
+
+            if not isinstance(results, list):
+                continue
+
+            for failure in results:
+                match controller.get_remediation(failure):
+                    case RestartRemediation(components=components):
+                        if service in components:
+                            return True
+
+        return False
+
+    def is_ok(self) -> bool:
+        """Check that all controls are entirely fine."""
+        return all(result == [] for result in self.results.values())

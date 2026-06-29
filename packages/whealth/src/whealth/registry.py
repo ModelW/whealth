@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from django.apps import apps
 
-from whealth.base import BaseControl, Failure
+from whealth.base import BaseControl, Failure, Remediation
 
 if TYPE_CHECKING:
     from whealth.graph import DependencyNote
@@ -97,6 +97,10 @@ class Controller:
     def get_failures(self) -> list[Failure]:
         """Proxy to the underlying control instance."""
         return self._instance.get_failures()
+
+    def get_remediation(self, failure: Failure) -> Remediation | None:
+        """Proxy to the underlying control instance."""
+        return self._instance.get_remediation(failure)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -372,6 +376,25 @@ class ControlRegistry:
     def get(self, app_label: str, slug: str) -> Controller | None:
         """Retrieve a previously registered controller by its key."""
         return self.controllers.get((app_label, slug))
+
+    def get_ancestors(self, key: tuple[str, str]) -> set[tuple[str, str]]:
+        """Return all ancestor control keys that given control transitively depends on.
+
+        Traverses the entire dependency chain upward and returns a set of keys.
+        """
+        ancestors = set()
+        queue = [key]
+
+        while queue:
+            curr_key = queue.pop(0)
+            controller = self.get(*curr_key)
+            if controller:
+                for dep in controller.depends_on:
+                    if dep not in ancestors:
+                        ancestors.add(dep)
+                        queue.append(dep)
+
+        return ancestors
 
     def discover(
         self,

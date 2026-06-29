@@ -71,10 +71,6 @@ class Failure:
     outcome: Outcome
     context: Any = None
 
-    def get_remediation(self) -> Remediation | None:
-        """Return a remediation for this failure, or None."""
-        return None
-
 
 class BaseControl(ABC):
     """Abstract base class for all health controls."""
@@ -92,3 +88,7 @@ class BaseControl(ABC):
         - Make sure that the order of failures is stable so that the output of
           this function is usefully comparable across runs.
         """
+
+    def get_remediation(self, failure: Failure) -> Remediation | None:
+        """Return a remediation for this failure, or None."""
+        return None

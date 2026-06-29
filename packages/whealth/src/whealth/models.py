@@ -1,10 +1,15 @@
 """Models for the whealth health-checking app."""
 
+from __future__ import annotations
+
 import uuid
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+
+if TYPE_CHECKING:
+    from whealth.runner import ControlRunner
 
 
 class RunRecord(models.Model):
@@ -61,6 +66,14 @@ class RunRecord(models.Model):
 
     def __str__(self) -> str:
         return f"Run @ {self.date_start} on {self.hostname}"
+
+    def get_runner(self) -> ControlRunner:
+        """Return a re-hydrated ControlRunner instance representing this run."""
+        from whealth.registry import get_control_registry
+        from whealth.runner import ControlRunner
+
+        registry = get_control_registry()
+        return ControlRunner.from_results(self.results, registry)
 
 
 class Cron(models.Model):
