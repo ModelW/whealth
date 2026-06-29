@@ -25,11 +25,15 @@ class RunRecord(models.Model):
         help_text=_("Timestamp when this run completed. Null while still running."),
         verbose_name=_("date end"),
     )
-    duration = models.DurationField(
-        blank=True,
-        null=True,
-        help_text=_("Wall-clock duration of this run."),
-        verbose_name=_("duration"),
+    duration = models.GeneratedField(
+        expression=models.F("date_end") - models.F("date_start"),
+        output_field=models.DurationField(
+            blank=True,
+            null=True,
+            help_text=_("Wall-clock duration of this run."),
+            verbose_name=_("duration"),
+        ),
+        db_persist=True,
     )
     hostname = models.CharField(
         max_length=255,

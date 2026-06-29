@@ -269,7 +269,6 @@ class ControlRunner:
         RunRecord.objects.create(
             date_start=start,
             date_end=end,
-            duration=self.duration,
             hostname=self.hostname,
             cli=" ".join(quote(arg) for arg in sys.argv),
             results=self.results_json,
