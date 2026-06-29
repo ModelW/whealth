@@ -7,12 +7,16 @@ import importlib
 import inspect
 import logging
 import threading
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
 from django.apps import apps
+from django.conf import settings
+from django.db import OperationalError
 from django.http import Http404
+from django.utils import timezone
 
 from whealth.base import BaseControl, Failure, Remediation
 
@@ -449,22 +453,28 @@ class ControlRegistry:
         Uses the latest :class:`~whealth.models.RunRecord` when the database
         is available.  Falls back to an immediate fresh run when the database
         cannot be queried.
-        """
-        from django.db import OperationalError
 
+        If the latest run is older than ``WHEALTH_RUN_MAX_AGE``
+        (default: 1 minute 10 seconds), a fresh run is generated instead.
+        """
         from whealth.models import RunRecord
 
+        max_age = _resolve_max_run_age()
+
         try:
-            latest = RunRecord.objects.order_by("-date_start").first()
+            latest = (
+                RunRecord.objects.filter(date_start__gte=timezone.now() - max_age)
+                .order_by("-date_start")
+                .first()
+            )
         except OperationalError:
             logger.exception("Database is not available for health checks.")
+            latest = None
+
+        if latest is None:
             runner = self.get_runner()
             runner.run_and_sync()
             return runner
-
-        if latest is None:
-            msg = "No run record found"
-            raise Http404(msg)
 
         if key and f"{key[0]}.{key[1]}" not in latest.results:
             msg = "Control not found"
@@ -622,6 +632,33 @@ class ControlRegistry:
 
         if links:
             through.objects.bulk_create(links, ignore_conflicts=True)
+
+
+def _resolve_max_run_age() -> timedelta:
+    """Resolve ``WHEALTH_RUN_MAX_AGE`` from Django settings.
+
+    Return value
+    ------------
+    :class:`~datetime.timedelta`
+        The maximum age of a cached run before a fresh one is forced
+        (defaults to 1 minute and 10 seconds).
+    """
+    match getattr(settings, "WHEALTH_RUN_MAX_AGE", None):
+        case None:
+            return timedelta(minutes=1, seconds=10)
+        case timedelta() as td:
+            return td
+        case dict(d):
+            return timedelta(**d)
+        case int() | float() as seconds:
+            return timedelta(seconds=seconds)
+        case raw:
+            msg = (
+                f"WHEALTH_RUN_MAX_AGE must be a timedelta, a dict of "
+                f"timedelta kwargs, or an int (seconds); "
+                f"got {type(raw).__name__}"
+            )
+            raise TypeError(msg)
 
 
 _cr_lock = threading.Lock()
