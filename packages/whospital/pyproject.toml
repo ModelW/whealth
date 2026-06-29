@@ -5,7 +5,7 @@ description = "Django project depending on whealth"
 requires-python = ">=3.14"
 dependencies = [
     "django>=5.0",
-    "whealth",
+    "whealth[rich]",
     "procrastinate>=3.0",
     "psycopg[binary]>=3.3.4",
     "testcontainers[postgres]>=4.14.2",

@@ -59,6 +59,7 @@ dev-dependencies = [
     "pytest>=8.0",
     "pytest-django>=4.0",
     "pytest-testcontainers-django>=0.2.2",
+    "rich>=13.0",
     "ruff>=0.15.15",
 ]
 

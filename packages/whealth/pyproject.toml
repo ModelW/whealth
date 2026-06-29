@@ -9,11 +9,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+rich = [
+    "rich>=13.0",
+]
 sentry = [
     "sentry-sdk>=2.0",
 ]
 procrastinate = [
     "procrastinate>=3.0",
+]
+dev = [
+    "whealth[rich]",
 ]
 
 [build-system]
