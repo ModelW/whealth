@@ -8,6 +8,7 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 from whealth import BaseControl, Failure, RestartRemediation
+from whealth.controls.database import Control as DatabaseControl
 from whealth.models import RunRecord
 from whealth.registry import ControlInfo, ControlRegistry, Manifest
 
@@ -67,6 +68,19 @@ def patch_registry(monkeypatch: pytest.MonkeyPatch) -> ControlRegistry:
 
     reg = ControlRegistry()
 
+    # Register the built-in database control (required by run_and_sync)
+    reg.register(
+        ControlInfo(
+            app_label="whealth",
+            slug="database",
+            title="Database",
+            module="whealth.controls.database",
+            control_class=DatabaseControl,
+            manifest=Manifest(depends_on=()),
+            readme="",
+        )
+    )
+
     # Register PassingControl
     reg.register(
         ControlInfo(
@@ -125,12 +139,13 @@ def patch_registry(monkeypatch: pytest.MonkeyPatch) -> ControlRegistry:
 
 def test_control_detail_view(client: Client, patch_registry: ControlRegistry) -> None:
     """Test the control_detail view under different conditions."""
-    # 1. No RunRecord exists
+    # 1. No RunRecord exists -> auto-generate a fresh run
     url = reverse(
         "whealth_control_detail", kwargs={"app": "test_app", "slug": "passing"}
     )
     res = client.get(url)
-    assert res.status_code == 404
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
 
     # Create a RunRecord with passing, failing, and skipped controls
     results = {
@@ -179,10 +194,11 @@ def test_control_detail_view(client: Client, patch_registry: ControlRegistry) ->
 
 def test_control_deep_view(client: Client, patch_registry: ControlRegistry) -> None:
     """Test the control_deep view under different conditions."""
-    # 1. No RunRecord exists -> 404
+    # 1. No RunRecord exists -> auto-generate a fresh run
     url = reverse("whealth_control_deep", kwargs={"app": "test_app", "slug": "passing"})
     res = client.get(url)
-    assert res.status_code == 404
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
 
     # Create a RunRecord
     results = {
@@ -226,10 +242,13 @@ def test_control_deep_view(client: Client, patch_registry: ControlRegistry) -> N
 
 def test_should_restart_view(client: Client, patch_registry: ControlRegistry) -> None:
     """Test the should_restart view under different conditions."""
-    # 1. No RunRecord exists
+    # 1. No RunRecord exists -> auto-generate a fresh run
+    #    FailingControl + RestartRequiredControl produce failures, so
+    #    should_restart_service("postgresql") is True.
     url = reverse("whealth_should_restart", kwargs={"service": "postgresql"})
     res = client.get(url)
-    assert res.status_code == 404
+    assert res.status_code == 418
+    assert res.json() == {"should_restart": True}
 
     # Create a RunRecord where only the passing control ran
     RunRecord.objects.create(
