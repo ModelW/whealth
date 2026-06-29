@@ -10,6 +10,7 @@ dependencies = [
     "psycopg[binary]>=3.3.4",
     "testcontainers[postgres]>=4.14.2",
     "dj-database-url>=2.0",
+    "granian>=1.7",
 ]
 
 [build-system]

@@ -2,6 +2,7 @@ UV := uv
 PNPX := pnpx
 ALL_PYTHON := packages
 MD_FILES := $(shell find . -name '*.md' -not -path './.venv/*' -not -path './node_modules/*' 2>/dev/null)
+WHOSPITAL := packages/whospital
 
 .PHONY: help
 help:
@@ -13,6 +14,7 @@ help:
 	@echo "  test       Run pytest suite"
 	@echo "  typecheck  Run mypy static type checking"
 	@echo "  clean      Run format, lint, and typecheck in sequence"
+	@echo "  serve      Start prod-like ASGI server via granian"
 	@echo ""
 	@echo "Depends: uv, pnpx (for prettier)"
 
@@ -41,3 +43,8 @@ typecheck:
 
 .PHONY: clean
 clean: format lint typecheck
+
+.PHONY: serve
+serve:
+	DJANGO_DEBUG=False $(UV) run python $(WHOSPITAL)/src/whospital/manage.py collectstatic --noinput --clear 2>&1 | tail -3
+	DJANGO_DEBUG=False $(UV) run granian --interface asgi --host 0.0.0.0 --port 8000 whospital.asgi:application

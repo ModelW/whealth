@@ -39,6 +39,15 @@ class ControlRunner:
     registry: ControlRegistry
     """The registry that created us"""
 
+    date_start: datetime.datetime | None = None
+    """When this run started."""
+
+    duration: datetime.timedelta | None = None
+    """Wall-clock duration of this run."""
+
+    hostname: str | None = None
+    """Hostname of the machine that performed this run."""
+
     results: dict[tuple[str, str], RunResult] = dataclasses.field(
         default_factory=dict, init=False
     )
@@ -54,12 +63,23 @@ class ControlRunner:
 
     @classmethod
     def from_results(
-        cls, results_json: dict[str, Any], registry: ControlRegistry
+        cls,
+        results_json: dict[str, Any],
+        registry: ControlRegistry,
+        *,
+        date_start: datetime.datetime | None = None,
+        duration: datetime.timedelta | None = None,
+        hostname: str | None = None,
     ) -> ControlRunner:
         """Re-hydrate a ControlRunner instance from serialized results JSON."""
         from whealth.base import Failure
 
-        runner = cls(registry=registry)
+        runner = cls(
+            registry=registry,
+            date_start=date_start,
+            duration=duration,
+            hostname=hostname,
+        )
 
         results_map: dict[tuple[str, str], RunResult] = {}
         for label, val in results_json.items():
@@ -242,11 +262,15 @@ class ControlRunner:
     def _save_run(self, start: datetime.datetime, end: datetime.datetime) -> None:
         from .models import RunRecord
 
+        self.date_start = start
+        self.duration = end - start
+        self.hostname = socket.gethostname()
+
         RunRecord.objects.create(
             date_start=start,
             date_end=end,
-            duration=end - start,
-            hostname=socket.gethostname(),
+            duration=self.duration,
+            hostname=self.hostname,
             cli=" ".join(quote(arg) for arg in sys.argv),
             results=self.results_json,
         )

@@ -1,13 +1,14 @@
 """Django settings for whospital."""
 
+import os
 from pathlib import Path
 
 import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent
 
-SECRET_KEY = "django-insecure-whospital-dev-key"  # noqa: S105
-DEBUG = True
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-whospital-dev-key")
+DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
 ROOT_URLCONF = "whospital.urls"
 WSGI_APPLICATION = "whospital.wsgi.application"
 ALLOWED_HOSTS = ["*"]

@@ -5,14 +5,18 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import inspect
+import logging
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
 from django.apps import apps
+from django.http import Http404
 
 from whealth.base import BaseControl, Failure, Remediation
+
+logger = logging.getLogger("whealth.registry")
 
 if TYPE_CHECKING:
     from whealth.graph import DependencyNote
@@ -438,6 +442,35 @@ class ControlRegistry:
         from whealth.runner import ControlRunner
 
         return ControlRunner(registry=self)
+
+    def get_recent_run(self, key: tuple[str, str] | None = None) -> ControlRunner:
+        """Return the runner for the most recent run from the DB, or a fresh run.
+
+        Uses the latest :class:`~whealth.models.RunRecord` when the database
+        is available.  Falls back to an immediate fresh run when the database
+        cannot be queried.
+        """
+        from django.db import OperationalError
+
+        from whealth.models import RunRecord
+
+        try:
+            latest = RunRecord.objects.order_by("-date_start").first()
+        except OperationalError:
+            logger.exception("Database is not available for health checks.")
+            runner = self.get_runner()
+            runner.run_and_sync()
+            return runner
+
+        if latest is None:
+            msg = "No run record found"
+            raise Http404(msg)
+
+        if key and f"{key[0]}.{key[1]}" not in latest.results:
+            msg = "Control not found"
+            raise Http404(msg)
+
+        return latest.get_runner()
 
     def get_sorted_controls(self) -> list[Controller]:
         """Return registered controllers in topological order.

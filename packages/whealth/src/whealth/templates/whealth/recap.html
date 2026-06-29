@@ -1,3 +1,4 @@
+{% load whealth_extras %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,11 +17,11 @@ th { background: #f5f5f5; }
 <body>
 <h1>Last run recap</h1>
 
-{% if run %}
+{% if runner %}
 <p>
-  <strong>Started:</strong> {{ run.date_start|date:"Y-m-d H:i:s" }}<br>
-  <strong>Duration:</strong> {{ duration_display }}<br>
-  <strong>Host:</strong> {{ run.hostname }}
+  <strong>Started:</strong> {{ runner.date_start|date:"Y-m-d H:i:s" }}<br>
+  <strong>Duration:</strong> {{ runner.duration|duration_to_human }}<br>
+  <strong>Host:</strong> {{ runner.hostname }}
 </p>
 {% endif %}
 
@@ -34,22 +35,22 @@ th { background: #f5f5f5; }
     </tr>
   </thead>
   <tbody>
-    {% for row in rows %}
+    {% for row in runner|results_with_controller %}
       <tr>
         <td>{{ row.app_label }}</td>
         <td>{{ row.slug }}</td>
-        <td>{{ row.title }}</td>
-        <td class="{{ row.status }}">
-          {% if row.status == "pass" %}
+        <td>{{ row.controller.title }}</td>
+        <td class="{{ row.result|run_status }}">
+          {% if row.result|run_status == "pass" %}
             pass
-          {% elif row.status == "fail" %}
+          {% elif row.result|run_status == "fail" %}
             fail
             <ul>
-              {% for f in row.failures %}
+              {% for f in row.result %}
                 <li>{{ f.key }} ({{ f.outcome }})</li>
               {% endfor %}
             </ul>
-          {% elif row.status == "blocked" %}
+          {% elif row.result|run_status == "blocked" %}
             blocked
           {% endif %}
         </td>

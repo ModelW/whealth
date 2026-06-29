@@ -73,7 +73,13 @@ class RunRecord(models.Model):
         from whealth.runner import ControlRunner
 
         registry = get_control_registry()
-        return ControlRunner.from_results(self.results, registry)
+        return ControlRunner.from_results(
+            self.results,
+            registry,
+            date_start=self.date_start,
+            duration=self.duration,
+            hostname=self.hostname,
+        )
 
 
 class Cron(models.Model):
