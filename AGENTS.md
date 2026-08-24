@@ -18,8 +18,10 @@
   (~2s, timeout 60000ms)
 - Static: `uv run ruff format --check .`, `uv run ruff check .`,
   `uv run mypy packages/whealth/src packages/whospital/src` (from root)
+- Venv setup: `uv sync --all-packages --all-extras` (plain `uv sync` strips
+  extras like sentry-sdk and breaks whospital tests).
 - Always: redirect output to a temp file; silent on success; dump failures only.
-- Last measured: 2026-08-24, whospital 97 tests in 10s, whealth 5+1skip in 2s.
+- Last measured: 2026-08-24, whospital 104 tests in 14s, whealth 7 in 3s.
 
 # How to Git commit
 
