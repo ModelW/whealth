@@ -746,6 +746,7 @@ name = "whealth"
 version = "0.1.0"
 source = { editable = "packages/whealth" }
 dependencies = [
+    { name = "croniter" },
     { name = "django" },
     { name = "pyyaml" },
 ]
@@ -766,6 +767,7 @@ sentry = [
 
 [package.metadata]
 requires-dist = [
+    { name = "croniter", specifier = ">=2.0" },
     { name = "django", specifier = ">=5.0" },
     { name = "procrastinate", marker = "extra == 'procrastinate'", specifier = ">=3.9" },
     { name = "pyyaml", specifier = ">=6.0" },
