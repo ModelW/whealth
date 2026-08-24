@@ -622,3 +622,222 @@ def test_transaction_marked_failed_on_sync_exception(
         errors[0]["contexts"]["trace"]["trace_id"]
         == txns[0]["contexts"]["trace"]["trace_id"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Adversarial sync/async shapes
+#
+# These cover the "weird shit" permutations of Django/asgiref bridging:
+#
+# - a sync task body that hops BACK onto the event loop (async_to_sync);
+# - an async task body that ships work to a thread (sync_to_async);
+# - a *sync* def returning a coroutine object — procrastinate awaits it
+#   only after the task middleware has already returned;
+# - a task that fails once and is retried;
+# - two jobs traced in the same worker run.
+# ---------------------------------------------------------------------------
+
+
+def test_transaction_covers_async_to_sync_nested_hop(
+    app: procrastinate.App,
+    sentry_events: list[dict[str, Any]],
+) -> None:
+    """Sync body -> async_to_sync -> coroutine: span still lands in the txn.
+
+    This is a double hop: loop -> thread (procrastinate's sync_to_async)
+    -> loop again (the body's async_to_sync).  asgiref propagates
+    contextvars both ways, so the innermost span must attach to the
+    job's transaction.
+    """
+    from whospital_apps.tasks import sync_calls_async
+
+    sync_calls_async.defer(timestamp=1)
+    run_worker(app)
+
+    txn = _transaction_named(sentry_events, sync_calls_async.name)
+    inner = [s for s in txn.get("spans", []) if s.get("op") == "test.inner"]
+    assert len(inner) == 1
+    assert inner[0]["description"] == "inner-sync-to-async"
+    assert inner[0]["trace_id"] == txn["contexts"]["trace"]["trace_id"]
+
+
+def test_transaction_covers_sync_to_async_nested_hop(
+    app: procrastinate.App,
+    sentry_events: list[dict[str, Any]],
+) -> None:
+    """Async body -> sync_to_async -> thread: span still lands in the txn."""
+    from whospital_apps.tasks import async_calls_sync
+
+    async_calls_sync.defer(timestamp=1)
+    run_worker(app)
+
+    txn = _transaction_named(sentry_events, async_calls_sync.name)
+    inner = [s for s in txn.get("spans", []) if s.get("op") == "test.inner"]
+    assert len(inner) == 1
+    assert inner[0]["description"] == "inner-async-to-sync"
+    assert inner[0]["trace_id"] == txn["contexts"]["trace"]["trace_id"]
+
+
+# ---------------------------------------------------------------------------
+# Sync task returning an awaitable
+# ---------------------------------------------------------------------------
+
+
+def test_sync_returning_awaitable_checks_out_after_completion(
+    app: procrastinate.App,
+    checkin_manager: CheckinManager,
+) -> None:
+    """The check-out happens after the returned awaitable completes.
+
+    Procrastinate awaits a sync task's returned awaitable *after* the
+    task middleware has returned — a naive check-out would fire before
+    the actual work ran, reporting a bogus duration (and success even
+    if the awaitable then fails).
+    """
+    from whospital_apps.tasks import sync_returns_awaitable
+
+    sync_returns_awaitable.defer(timestamp=1)
+    run_worker(app)
+    checkin_manager.queue.join()
+
+    checkin = CheckIn.objects.filter(cron__slug=sync_returns_awaitable.name).latest(
+        "start"
+    )
+    assert checkin.state == CheckIn.State.FINISHED
+    assert checkin.end is not None
+    # The awaitable sleeps 50ms; a premature check-out reports ~0.
+    assert (checkin.end - checkin.start).total_seconds() >= 0.05
+
+
+def test_sync_returning_failing_awaitable_reports_error(
+    app: procrastinate.App,
+    checkin_manager: CheckinManager,
+) -> None:
+    """A failure inside the returned awaitable is reported as an error."""
+    from whospital_apps.tasks import sync_returns_failing_awaitable
+
+    with patch("whealth.cron.capture_checkin") as mock:
+        sync_returns_failing_awaitable.defer(timestamp=1)
+        run_worker(app)
+        checkin_manager.queue.join()
+
+    # The job itself must have failed…
+    assert any(
+        j["status"] == "failed"
+        for j in app.connector.jobs.values()
+        if j["task_name"] == sync_returns_failing_awaitable.name
+    )
+    # …and the cron monitor must see an error, not a bogus "ok".
+    slug = monitor_slug(sync_returns_failing_awaitable.name)
+    statuses = [
+        c.kwargs.get("status")
+        for c in mock.call_args_list
+        if c.kwargs.get("monitor_slug") == slug
+    ]
+    assert "error" in statuses
+    assert "ok" not in statuses
+
+
+# ---------------------------------------------------------------------------
+# Retries
+# ---------------------------------------------------------------------------
+
+
+def test_retry_records_error_then_ok(
+    app: procrastinate.App,
+    checkin_manager: CheckinManager,
+) -> None:
+    """A retried task records an error check-in, then an ok check-in.
+
+    Each *attempt* is a separate cron check-in: the failed first attempt
+    must not be masked, and the successful retry must close the story.
+    (The worker's periodic deferrer may squeeze in extra runs of the
+    task — with their own check-ins — so only the presence and the
+    relative order of the deferred job's two attempts are asserted.)
+    """
+    from whospital_apps.tasks import sync_retry_once
+
+    with patch("whealth.cron.capture_checkin") as mock:
+        sync_retry_once.defer(timestamp=1)
+        run_worker(app)  # first attempt fails, job goes back to todo
+        run_worker(app)  # retry succeeds
+        checkin_manager.queue.join()
+
+    slug = monitor_slug(sync_retry_once.name)
+    statuses = [
+        c.kwargs.get("status")
+        for c in mock.call_args_list
+        if c.kwargs.get("monitor_slug") == slug
+        and c.kwargs.get("status") in ("ok", "error")
+    ]
+    assert "error" in statuses, "failed first attempt must record an error"
+    assert "ok" in statuses, "successful retry must record an ok"
+    assert statuses.index("error") < len(statuses) - 1 - statuses[::-1].index("ok"), (
+        "an ok check-in must come after the error one"
+    )
+    assert any(
+        j["status"] == "succeeded"
+        for j in app.connector.jobs.values()
+        if j["task_name"] == sync_retry_once.name
+    )
+
+
+def test_transactions_isolated_under_concurrency(
+    app: procrastinate.App,
+    sentry_events: list[dict[str, Any]],
+) -> None:
+    """Concurrent jobs on the same loop keep separate traces.
+
+    With ``concurrency=2`` both jobs interleave on the same event loop;
+    the isolation scope must keep each job's spans in its own
+    transaction (asyncio tasks fork contextvars, so scopes never bleed).
+    """
+    from whospital_apps.tasks import async_traced, sync_calls_async
+
+    async_traced.defer(timestamp=1)
+    sync_calls_async.defer(timestamp=1)
+    app.run_worker(
+        wait=False,
+        install_signal_handlers=False,
+        listen_notify=False,
+        concurrency=2,
+    )
+
+    async_txn = _transaction_named(sentry_events, async_traced.name)
+    hop_txn = _transaction_named(sentry_events, sync_calls_async.name)
+    assert (
+        async_txn["contexts"]["trace"]["trace_id"]
+        != hop_txn["contexts"]["trace"]["trace_id"]
+    )
+    # Each transaction contains exactly its own inner span.
+    for txn, desc in (
+        (async_txn, "inner-async"),
+        (hop_txn, "inner-sync-to-async"),
+    ):
+        inner = [s for s in txn.get("spans", []) if s.get("op") == "test.inner"]
+        assert len(inner) == 1
+        assert inner[0]["description"] == desc
+
+
+def test_retried_error_still_captured_in_sentry(
+    app: procrastinate.App,
+) -> None:
+    """The original error of a to-be-retried attempt reaches Sentry.
+
+    Procrastinate converts an exception into ``JobRetry`` *outside* the
+    worker middleware (in ``_process_job``'s own handler), so the
+    middleware sees — and captures — the raw application error even when
+    the job will be retried.  Only a ``JobRetry`` raised deliberately by
+    the task body itself is treated as a lifecycle signal and skipped.
+    """
+    from whospital_apps.tasks import _RETRY_SEEN, sync_retry_once
+
+    _RETRY_SEEN.clear()
+    with patch("whealth.procrastinate.capture_exception") as mock:
+        sync_retry_once.defer(timestamp=2)
+        run_worker(app)  # first attempt fails -> will be retried
+
+    captured = [c.args[0] for c in mock.call_args_list]
+    assert any(
+        isinstance(e, ValueError) and str(e) == "first attempt fails" for e in captured
+    ), "the failing first attempt must be captured even though it will retry"

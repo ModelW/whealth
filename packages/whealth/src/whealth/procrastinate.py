@@ -119,6 +119,26 @@ def _check_in(cron: ProcrastinateCron, slug: str) -> Any:
     )
 
 
+async def _checked_out_awaitable(result: Awaitable[Any], receipt: Any) -> Any:
+    """Await a sync task's returned awaitable, then check out.
+
+    A *sync* ``def`` may return a coroutine/awaitable: procrastinate
+    awaits it only *after* the task middleware has returned, so a
+    check-out in the middleware itself would fire before the actual work
+    ran — reporting a bogus near-zero duration, and a success even when
+    the awaitable then fails.  Deferring the check-out into this wrapper
+    ties it to the awaitable's real completion.
+    """
+    failed = False
+    try:
+        return await result
+    except Exception:
+        failed = True
+        raise
+    finally:
+        get_checkin_manager().check_out(receipt, failed=failed)
+
+
 def checkin_sync_middleware(
     call_next: Callable[[], Any],
     context: job_context.JobContext,
@@ -132,6 +152,10 @@ def checkin_sync_middleware(
     the Sentry cron monitor.  Tasks without a cron pass through
     untouched.
 
+    When the sync task returns an awaitable (a sync ``def`` returning a
+    coroutine), the check-out is deferred until that awaitable completes
+    — see :func:`_checked_out_awaitable`.
+
     Install worker-wide together with :func:`checkin_async_middleware`
     (task middleware is kind-filtered per task, so each task gets
     exactly the matching one).
@@ -141,14 +165,19 @@ def checkin_sync_middleware(
         return call_next()
 
     receipt = _check_in(cron, context.task.name)
-    failed = False
     try:
-        return call_next()
+        result = call_next()
     except Exception:
-        failed = True
+        get_checkin_manager().check_out(receipt, failed=True)
         raise
-    finally:
-        get_checkin_manager().check_out(receipt, failed=failed)
+
+    if inspect.isawaitable(result):
+        # Procrastinate will await this after the middleware returns;
+        # the check-out rides along with the real completion.
+        return _checked_out_awaitable(result, receipt)
+
+    get_checkin_manager().check_out(receipt, failed=False)
+    return result
 
 
 async def checkin_async_middleware(
