@@ -1,0 +1,59 @@
+# Fast checks on every push/PR. Jobs are split so everything runs in
+# parallel, and output formats are chosen to produce GitHub annotations
+# (inline feedback on PRs) where supported.
+
+name: CI
+
+on:
+    push:
+        branches: [master, develop]
+    pull_request:
+
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    static:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: astral-sh/setup-uv@v9.0.0
+            - name: Install dependencies
+              run: uv sync --all-packages --all-extras
+            - name: Ruff
+              # GitHub output format produces inline PR annotations
+              run: uv run ruff check --output-format=github .
+            - name: Ruff format
+              run: uv run ruff format --check .
+            - name: Mypy
+              run: uv run mypy packages/whealth/src packages/whospital/src
+
+    # The two test suites run from their own package directory: both
+    # packages ship a top-level `tests` package, so a root-level pytest
+    # run clashes at collection time (see AGENTS.md).
+    test-whealth:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: astral-sh/setup-uv@v9.0.0
+            - name: Install dependencies
+              run: uv sync --all-packages --all-extras
+            - name: Tests
+              working-directory: packages/whealth
+              # The annotate-failures plugin turns failing tests into
+              # inline PR annotations; --with keeps it a CI-only dependency.
+              run: uv run --with pytest-github-actions-annotate-failures pytest -q
+
+    test-whospital:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: astral-sh/setup-uv@v9.0.0
+            - name: Install dependencies
+              run: uv sync --all-packages --all-extras
+            - name: Tests
+              working-directory: packages/whospital
+              # The suite starts its own postgres via testcontainers —
+              # Docker is available on ubuntu-latest, no service needed.
+              run: uv run --with pytest-github-actions-annotate-failures pytest -q
