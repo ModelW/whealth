@@ -76,6 +76,24 @@ def patch_registry(monkeypatch: pytest.MonkeyPatch) -> ControlRegistry:
             )
         )
 
+    # A meta (manifest-only) control: no Python class, marked with a
+    # badge on the recap page.
+    reg.register(
+        ControlInfo(
+            app_label="test_app",
+            slug="bundle",
+            title="Bundle Control",
+            module="test_app.controls.bundle",
+            control_class=None,
+            manifest=Manifest(
+                depends_on=("test_app.crit",),
+                is_ignorable=False,
+                meta=True,
+            ),
+            readme="",
+        )
+    )
+
     monkeypatch.setattr(whealth.registry, "_cr", reg)
     return reg
 
@@ -158,6 +176,23 @@ def test_recap_shows_minor_when_minor_impact(
 
     assert "Maintenance Advised" in content
     assert "Code: Yellow" in content
+
+
+def test_recap_shows_meta_badge(
+    admin_client: Client, patch_registry: ControlRegistry
+) -> None:
+    """Meta controls carry a small 'meta' badge next to their title."""
+    _create_run_record(
+        {
+            "whealth.database": [],
+            "test_app.crit": [],
+            "test_app.bundle": [],
+        }
+    )
+    resp = admin_client.get(reverse("whealth_recap"))
+    content = resp.content.decode()
+
+    assert 'Bundle Control <span class="meta-badge">meta</span>' in content
 
 
 def test_recap_highest_impact_wins(

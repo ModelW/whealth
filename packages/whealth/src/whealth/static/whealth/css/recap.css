@@ -12,6 +12,19 @@ section { border: 1px solid #ccc; padding: 1em; margin-bottom: 1em; }
 .badge-orange { color: orange; border-color: orange; }
 .badge-red { color: red; border-color: red; }
 
+/* Marker for manifest-only (meta) controls: they have no Python check
+   and only mirror their dependency bundle, so readers should not expect
+   a failure of their own. */
+.meta-badge {
+  font-family: monospace;
+  font-size: 0.75em;
+  color: #666;
+  border: 1px solid #999;
+  border-radius: 3px;
+  padding: 0.1em 0.4em;
+  vertical-align: middle;
+}
+
 .tl-grid {
   display: grid;
   grid-template-columns: repeat(60, 1fr);

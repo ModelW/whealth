@@ -34,7 +34,8 @@ class ControlInfo:
     app_label: str
     slug: str
     module: str
-    control_class: type[BaseControl]
+    control_class: type[BaseControl] | None
+    """``None`` for meta (manifest-only) controls, which have no Python check."""
     manifest: Manifest
     readme: str
     title: str | None = None
@@ -49,11 +50,16 @@ class Controller:
     """
 
     info: ControlInfo
-    _instance: BaseControl = dataclasses.field(init=False)
+    _instance: BaseControl | None = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        """Instantiate the control class after frozen init."""
-        object.__setattr__(self, "_instance", self.info.control_class())
+        """Instantiate the control class after frozen init.
+
+        Meta controls carry no class at all, so the instance stays
+        ``None`` and the proxy methods short-circuit.
+        """
+        cls = self.info.control_class
+        object.__setattr__(self, "_instance", cls() if cls is not None else None)
 
     @property
     def app_label(self) -> str:
@@ -93,6 +99,11 @@ class Controller:
         return self.info.manifest.impact
 
     @property
+    def is_meta(self) -> bool:
+        """Whether this control is manifest-only (no Python check)."""
+        return self.info.manifest.meta
+
+    @property
     def key(self) -> tuple[str, str]:
         """Tuple identifier ``(app_label, slug)``."""
         return (self.info.app_label, self.info.slug)
@@ -108,11 +119,23 @@ class Controller:
         return self.key == other.key
 
     def get_failures(self) -> list[Failure]:
-        """Proxy to the underlying control instance."""
+        """Proxy to the underlying control instance.
+
+        Meta controls have no instance and always pass on their own —
+        their health signal lives entirely in their dependency subgraph.
+        """
+        if self._instance is None:
+            return []
         return self._instance.get_failures()
 
     def get_remediation(self, failure: Failure) -> Remediation | None:
-        """Proxy to the underlying control instance."""
+        """Proxy to the underlying control instance.
+
+        Meta controls never produce failures of their own, so there is
+        nothing to remediate.
+        """
+        if self._instance is None:
+            return None
         return self._instance.get_remediation(failure)
 
 
@@ -124,6 +147,13 @@ class Manifest:
     title: str | None = None
     is_ignorable: bool = True
     impact: Literal["critical", "major", "minor"] = "major"
+    meta: bool = False
+    """Manifest-only control: no Python check, always passes on its own.
+
+    Meta controls bundle their ``depends_on`` subgraph under a single
+    name (e.g. "the website works"); their deep status is the only
+    meaningful signal, which is why they default to non-ignorable.
+    """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -173,6 +203,18 @@ def _import_control_module(
     return mod, Path(mod_path).resolve().parent
 
 
+def _has_control_class(mod: object) -> bool:
+    """Whether *mod* contains any BaseControl subclass.
+
+    Used to reject meta controls that also ship a Python check — the
+    intent would be ambiguous, so discovery fails loudly instead.
+    """
+    return any(
+        inspect.isclass(obj) and issubclass(obj, BaseControl) and obj is not BaseControl
+        for _, obj in inspect.getmembers(mod)
+    )
+
+
 def _extract_control_class(
     mod: object,
     module: str,
@@ -198,6 +240,55 @@ def _extract_control_class(
             )
 
 
+def _build_manifest(
+    module: str,
+    deps: list[str],
+    extra: dict[str, object],
+) -> Manifest | str:
+    """Build a Manifest from validated deps and the remaining YAML keys."""
+    title: str | None = None
+    match extra.get("title"):
+        case str(title):
+            pass
+
+    meta: bool = False
+    match extra.get("meta"):
+        case bool(meta):
+            pass
+
+    # A meta control is nothing but its dependency bundle: with
+    # no declared deps it would check nothing at all, which is
+    # necessarily a configuration mistake.
+    if meta and not deps:
+        return f"Control {module!r} declares meta: true but has no depends_on entries."
+
+    # Meta controls default to non-ignorable: ignoring a bundle
+    # whose only purpose is to reflect its dependencies makes it
+    # meaningless. An explicit is_ignorable still wins.
+    is_ignorable: bool = not meta
+    match extra.get("is_ignorable"):
+        case bool(is_ignorable):
+            pass
+
+    impact: Literal["critical", "major", "minor"] = "major"
+    match extra.get("impact"):
+        case "critical" | "major" | "minor" as i:
+            impact = i
+
+    # Auto-depend on database if ignorable, because the ignore feature
+    # requires a database lookup.
+    if is_ignorable and "whealth.database" not in deps:
+        deps.append("whealth.database")
+
+    return Manifest(
+        depends_on=tuple(deps),
+        title=title,
+        is_ignorable=is_ignorable,
+        impact=impact,
+        meta=meta,
+    )
+
+
 def _validate_manifest(pkg_dir: Path, module: str) -> Manifest | str:
     """Read and validate the YAML manifest for a control."""
     raw = _read_file(pkg_dir / "manifest.yaml")
@@ -215,33 +306,7 @@ def _validate_manifest(pkg_dir: Path, module: str) -> Manifest | str:
                     f"Control {module!r} manifest.yaml 'depends_on' "
                     f"contains non-string entries."
                 )
-
-            title: str | None = None
-            match extra.get("title"):
-                case str(title):
-                    pass
-
-            is_ignorable: bool = True
-            match extra.get("is_ignorable"):
-                case bool(is_ignorable):
-                    pass
-
-            impact: Literal["critical", "major", "minor"] = "major"
-            match extra.get("impact"):
-                case "critical" | "major" | "minor" as i:
-                    impact = i
-
-            # Auto-depend on database if ignorable, because the ignore feature
-            # requires a database lookup.
-            if is_ignorable and "whealth.database" not in deps:
-                deps.append("whealth.database")
-
-            return Manifest(
-                depends_on=tuple(deps),
-                title=title,
-                is_ignorable=is_ignorable,
-                impact=impact,
-            )
+            return _build_manifest(module, deps, extra)
         case _:
             return (
                 f"Control {module!r} manifest.yaml must contain a "
@@ -289,6 +354,12 @@ def attempt_load(
     Markdown ``README.md``. Any missing or invalid piece produces a
     descriptive error string instead of crashing.
 
+    Controls whose manifest declares ``meta: true`` are manifest-only:
+    they must NOT contain a ``BaseControl`` subclass (having one is a
+    validation error, since the intent would be ambiguous) but still
+    need an importable package (an empty ``__init__.py``), a manifest,
+    and a README.
+
     Parameters
     ----------
     module : str
@@ -310,13 +381,26 @@ def attempt_load(
         return imported
     mod, pkg_dir = imported
 
-    control_cls = _extract_control_class(mod, module)
-    if isinstance(control_cls, str):
-        return control_cls
-
+    # The manifest is parsed before class extraction because the meta
+    # flag decides whether a Python class is required or forbidden.
     manifest = _validate_manifest(pkg_dir, module)
     if isinstance(manifest, str):
         return manifest
+
+    control_cls: type[BaseControl] | None
+    if manifest.meta:
+        if _has_control_class(mod):
+            return (
+                f"Control {module!r} declares meta: true but contains a "
+                f"BaseControl subclass; meta controls must not have a "
+                f"Python check."
+            )
+        control_cls = None
+    else:
+        extracted = _extract_control_class(mod, module)
+        if isinstance(extracted, str):
+            return extracted
+        control_cls = extracted
 
     readme = _validate_readme_text(pkg_dir, module)
     if readme is None:

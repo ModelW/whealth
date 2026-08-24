@@ -133,6 +133,24 @@ def patch_registry(monkeypatch: pytest.MonkeyPatch) -> ControlRegistry:
         )
     )
 
+    # Register a meta (manifest-only) control bundling a passing and a
+    # failing dependency: no Python class, always green on its own.
+    reg.register(
+        ControlInfo(
+            app_label="test_app",
+            slug="bundle",
+            title="Bundle Control",
+            module="test_app.controls.bundle",
+            control_class=None,
+            manifest=Manifest(
+                depends_on=("test_app.passing", "test_app.failing"),
+                is_ignorable=False,
+                meta=True,
+            ),
+            readme="",
+        )
+    )
+
     monkeypatch.setattr(whealth.registry, "_cr", reg)
     return reg
 
@@ -238,6 +256,45 @@ def test_control_deep_view(client: Client, patch_registry: ControlRegistry) -> N
     )
     res = client.get(url)
     assert res.status_code == 404
+
+
+def test_meta_control_views(client: Client, patch_registry: ControlRegistry) -> None:
+    """A meta control is green on its own but its deep state mirrors its deps.
+
+    The bundle depends on a failing control, so a fresh run blocks it:
+    the shallow endpoint stays 200 (the pre-canned check always passes)
+    while the deep endpoint reports the unhealthy subgraph with 418.
+    """
+    # Shallow: blocked (dep failed) renders as 200, like any regular
+    # control whose own check did not fail.
+    url = reverse(
+        "whealth_control_detail", kwargs={"app": "test_app", "slug": "bundle"}
+    )
+    res = client.get(url)
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+
+    # Deep: the failing ancestor makes the bundle unhealthy -> 418.
+    url = reverse("whealth_control_deep", kwargs={"app": "test_app", "slug": "bundle"})
+    res = client.get(url)
+    assert res.status_code == 418
+    assert res.json() == {"ok": False}
+
+    # With a healthy subgraph recorded, deep flips to 200.
+    RunRecord.objects.all().delete()
+    RunRecord.objects.create(
+        date_start=timezone.now(),
+        date_end=timezone.now(),
+        hostname="localhost",
+        results={
+            "test_app.passing": [],
+            "test_app.failing": [],
+            "test_app.bundle": [],
+        },
+    )
+    res = client.get(url)
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
 
 
 def test_should_restart_view(client: Client, patch_registry: ControlRegistry) -> None:

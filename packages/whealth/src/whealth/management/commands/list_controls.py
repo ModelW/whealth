@@ -36,10 +36,14 @@ class Command(BaseCommand):
             self.stdout.write(_("  (none)"))
 
         for controller in registry.controllers.values():
+            # Meta controls have no Python check of their own, which is
+            # worth surfacing when eyeballing the registry.
+            meta_marker = " (meta)" if controller.is_meta else ""
             self.stdout.write(
                 f"  {self.style.SQL_FIELD(controller.title)} "
                 f"({self.style.MIGRATE_LABEL(controller.app_label)}."
                 f"{self.style.MIGRATE_LABEL(controller.slug)})"
+                f"{meta_marker}"
             )
 
         self.stdout.write("")
