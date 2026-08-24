@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "django>=5.0",
     "whealth[rich]",
-    "procrastinate>=3.0",
+    "procrastinate>=3.9",
     "psycopg[binary]>=3.3.4",
     "testcontainers[postgres]>=4.14.2",
     "dj-database-url>=2.0",

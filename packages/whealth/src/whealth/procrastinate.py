@@ -1,4 +1,28 @@
-"""Procrastinate integration for whealth health-check crons."""
+"""Procrastinate integration for whealth health-check crons.
+
+The integration is built on Procrastinate's middleware mechanism
+(Procrastinate >= 3.9):
+
+* :func:`checkin_sync_middleware` / :func:`checkin_async_middleware` —
+  worker-wide *task middleware* implementing the cron check-in
+  lifecycle (DB record + Sentry cron monitor) for every task declared
+  with a cron through :func:`procrastinate_task`.
+* :func:`sentry_worker_middleware` — *worker middleware* wrapping every
+  job in a Sentry isolation scope and transaction.
+
+With Django, all of them are installed automatically by whealth's
+``AppConfig.ready()`` — no setup needed on the user's part.  Outside
+Django (or on a hand-built app), call :func:`install_middleware`
+yourself, or pass the middleware directly to ``app.run_worker()``.
+
+The :func:`procrastinate_task` decorator is kept as the public entry
+point for declaring health-checked periodic tasks.  When the worker-wide
+middleware is not installed, the decorator's own per-task middleware
+performs the check-ins, so existing applications keep working without
+any worker configuration.  When both are present, the per-task
+middleware detects the worker-wide one and stands down — check-ins are
+never doubled.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +34,13 @@ from typing import TYPE_CHECKING, Any
 
 from django.db import close_old_connections, reset_queries
 
-from whealth.auto_sentry import task_trace
+from whealth.auto_sentry import capture_exception, isolation_scope, start_transaction
 from whealth.cron import CrontabSchedule, get_checkin_manager
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
+
+    from procrastinate import job_context, worker
 
 
 @dataclass(frozen=True)
@@ -46,7 +72,13 @@ class ProcrastinateCron:
 
 
 def plug_psycopg_leak(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Close old DB connections before and after a task runs."""
+    """Close old DB connections before and after a task runs.
+
+    .. deprecated::
+        Procrastinate's Django integration (>= 3.9) performs this cleanup
+        itself through task middleware — this wrapper is kept only for
+        backwards compatibility with existing applications.
+    """
 
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -61,19 +93,302 @@ def plug_psycopg_leak(func: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+# ---------------------------------------------------------------------------
+# Check-in lifecycle (task middleware)
+# ---------------------------------------------------------------------------
+
+_cron_configs: dict[str, ProcrastinateCron] = {}
+"""Cron configuration per task name, populated by :func:`procrastinate_task`."""
+
+
+def get_cron_config(task_name: str) -> ProcrastinateCron | None:
+    """Return the cron configuration declared for a task, if any."""
+    return _cron_configs.get(task_name)
+
+
+def _check_in(cron: ProcrastinateCron, slug: str) -> Any:
+    """Open a check-in for the given cron/slug pair."""
+    return get_checkin_manager().check_in(
+        slug=slug,
+        schedule=CrontabSchedule(expression=cron.expression),
+        timezone=cron.timezone,
+        checkin_margin=cron.checkin_margin,
+        max_runtime=cron.max_runtime,
+        failure_issue_threshold=cron.failure_issue_threshold,
+        recovery_threshold=cron.recovery_threshold,
+    )
+
+
+async def _checked_out_awaitable(result: Awaitable[Any], receipt: Any) -> Any:
+    """Await a sync task's returned awaitable, then check out.
+
+    A *sync* ``def`` may return a coroutine/awaitable: procrastinate
+    awaits it only *after* the task middleware has returned, so a
+    check-out in the middleware itself would fire before the actual work
+    ran — reporting a bogus near-zero duration, and a success even when
+    the awaitable then fails.  Deferring the check-out into this wrapper
+    ties it to the awaitable's real completion.
+    """
+    failed = False
+    try:
+        return await result
+    except Exception:
+        failed = True
+        raise
+    finally:
+        get_checkin_manager().check_out(receipt, failed=failed)
+
+
+def checkin_sync_middleware(
+    call_next: Callable[[], Any],
+    context: job_context.JobContext,
+    worker: worker.Worker,
+) -> Any:
+    """Sync task middleware implementing the check-in lifecycle.
+
+    Wraps every *sync* task declared with a cron through
+    :func:`procrastinate_task` in a ``check_in`` / ``check_out`` pair
+    that persists a :class:`~whealth.models.CheckIn` record and notifies
+    the Sentry cron monitor.  Tasks without a cron pass through
+    untouched.
+
+    When the sync task returns an awaitable (a sync ``def`` returning a
+    coroutine), the check-out is deferred until that awaitable completes
+    — see :func:`_checked_out_awaitable`.
+
+    Install worker-wide together with :func:`checkin_async_middleware`
+    (task middleware is kind-filtered per task, so each task gets
+    exactly the matching one).
+    """
+    cron = get_cron_config(context.task.name)
+    if cron is None:
+        return call_next()
+
+    receipt = _check_in(cron, context.task.name)
+    try:
+        result = call_next()
+    except Exception:
+        get_checkin_manager().check_out(receipt, failed=True)
+        raise
+
+    if inspect.isawaitable(result):
+        # Procrastinate will await this after the middleware returns;
+        # the check-out rides along with the real completion.
+        return _checked_out_awaitable(result, receipt)
+
+    get_checkin_manager().check_out(receipt, failed=False)
+    return result
+
+
+async def checkin_async_middleware(
+    call_next: Callable[[], Awaitable[Any]],
+    context: job_context.JobContext,
+    worker: worker.Worker,
+) -> Any:
+    """Async task middleware implementing the check-in lifecycle.
+
+    Async counterpart of :func:`checkin_sync_middleware`, wrapping
+    *async* cron tasks.
+    """
+    cron = get_cron_config(context.task.name)
+    if cron is None:
+        return await call_next()
+
+    receipt = _check_in(cron, context.task.name)
+    failed = False
+    try:
+        return await call_next()
+    except Exception:
+        failed = True
+        raise
+    finally:
+        get_checkin_manager().check_out(receipt, failed=failed)
+
+
+_CHECKIN_MIDDLEWARES = (checkin_sync_middleware, checkin_async_middleware)
+
+
+def _worker_handles_checkins(worker: worker.Worker | None) -> bool:
+    """Whether the running worker already has the check-in middleware."""
+    if worker is None:
+        return False
+    return any(mw in _CHECKIN_MIDDLEWARES for mw in worker.task_middleware)
+
+
+def _fallback_checkin_sync(
+    call_next: Callable[[], Any],
+    context: job_context.JobContext,
+    worker: worker.Worker,
+) -> Any:
+    """Per-task fallback attached by :func:`procrastinate_task` (sync).
+
+    Performs the check-in lifecycle only when the worker does *not*
+    already run :func:`checkin_sync_middleware` worker-wide, so
+    check-ins are never doubled.
+    """
+    if _worker_handles_checkins(worker):
+        return call_next()
+    return checkin_sync_middleware(call_next, context, worker)
+
+
+async def _fallback_checkin_async(
+    call_next: Callable[[], Awaitable[Any]],
+    context: job_context.JobContext,
+    worker: worker.Worker,
+) -> Any:
+    """Per-task fallback attached by :func:`procrastinate_task` (async).
+
+    Async counterpart of :func:`_fallback_checkin_sync`.
+    """
+    if _worker_handles_checkins(worker):
+        return await call_next()
+    return await checkin_async_middleware(call_next, context, worker)
+
+
+# ---------------------------------------------------------------------------
+# Sentry tracing (worker middleware)
+# ---------------------------------------------------------------------------
+
+
+async def sentry_worker_middleware(
+    call_next: Callable[[], Awaitable[Any]],
+    context: job_context.JobContext,
+    worker: worker.Worker,
+) -> Any:
+    """Wrap every job in a Sentry isolation scope and transaction.
+
+    Worker middleware runs on the event loop for both sync and async
+    tasks, so a single middleware covers the whole worker.  Each job gets:
+
+    * its own isolation scope, so tags/breadcrumbs don't bleed between
+      jobs;
+    * a transaction (``queue.task.procrastinate``) carrying queue
+      metadata, so spans opened inside the task attach to it;
+    * exception capture — the exception is reported to Sentry and then
+      re-raised so Procrastinate's retry/failure logic is unaffected.
+
+    Install it worker-wide::
+
+        PROCRASTINATE_WORKER_DEFAULTS = {
+            "worker_middleware": [sentry_worker_middleware],
+        }
+
+    All Sentry calls degrade to no-ops when ``sentry_sdk`` is missing.
+    """
+    from procrastinate import exceptions as procrastinate_exceptions
+
+    job = context.job
+
+    with (
+        isolation_scope(),
+        start_transaction(
+            op="queue.task.procrastinate",
+            name=context.task.name,
+        ) as transaction,
+    ):
+        transaction.set_data("messaging.destination.name", job.queue)
+        if job.id is not None:
+            transaction.set_data("messaging.message.id", job.id)
+        transaction.set_data("messaging.message.retry.count", job.attempts)
+
+        try:
+            return await call_next()
+        except (
+            procrastinate_exceptions.JobAborted,
+            procrastinate_exceptions.JobRetry,
+        ):
+            # Deliberate lifecycle signals, not application errors.
+            raise
+        except Exception as exc:
+            capture_exception(exc)
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Worker-wide installation
+# ---------------------------------------------------------------------------
+
+
+def install_middleware(app: Any) -> None:
+    """Install whealth's middleware worker-wide on a Procrastinate app.
+
+    Adds the check-in task middleware (sync + async) and the Sentry
+    worker middleware to the app's ``worker_defaults`` — idempotent, so
+    calling it twice doesn't stack middleware.
+
+    With Django this is called automatically by whealth's
+    ``AppConfig.ready()`` — no setup needed.  Outside Django, call it on
+    your app before running the worker.
+    """
+    defaults = app.worker_defaults
+
+    task_mw = list(defaults.get("task_middleware") or [])
+    for mw in _CHECKIN_MIDDLEWARES:
+        if mw not in task_mw:
+            task_mw.append(mw)
+    defaults["task_middleware"] = task_mw
+
+    worker_mw = list(defaults.get("worker_middleware") or [])
+    if sentry_worker_middleware not in worker_mw:
+        worker_mw.append(sentry_worker_middleware)
+    defaults["worker_middleware"] = worker_mw
+
+
+chained_on_app_ready: Any = None
+"""User-configured ``PROCRASTINATE_ON_APP_READY`` hook to chain, if any.
+
+Set by :meth:`whealth.apps.WhealthConfig.ready` when it takes over the
+setting while the user had configured their own hook.
+"""
+
+
+def on_app_ready(app: Any) -> None:
+    """``PROCRASTINATE_ON_APP_READY`` hook installing whealth's middleware.
+
+    Wired automatically by :meth:`whealth.apps.WhealthConfig.ready` when
+    procrastinate's Django app initializes after whealth's.  If the user
+    had configured their own hook, it is called first.
+    """
+    from django.utils.module_loading import import_string
+
+    if chained_on_app_ready:
+        hook = (
+            import_string(chained_on_app_ready)
+            if isinstance(chained_on_app_ready, str)
+            else chained_on_app_ready
+        )
+        hook(app)
+
+    install_middleware(app)
+
+
+# ---------------------------------------------------------------------------
+# Task declaration
+# ---------------------------------------------------------------------------
+
+
 def procrastinate_task(
-    app: Any,
+    app: Any = None,
     cron: ProcrastinateCron | None = None,
     **task_kwargs: Any,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Decorate a function as a procrastinate task with health-check lifecycle.
+    """Declare a procrastinate task with health-check lifecycle.
 
-    When ``cron`` is provided the task is also registered as periodic and
-    every execution is wrapped in a ``check_in`` / ``check_out`` pair that
-    persists a :class:`~whealth.models.CheckIn` record and notifies Sentry.
-    Sync and async functions are both supported.
+    When ``cron`` is provided the task is registered as periodic and
+    every execution is wrapped in a ``check_in`` / ``check_out`` pair
+    that persists a :class:`~whealth.models.CheckIn` record and notifies
+    Sentry.  Sync and async functions are both supported.
 
-    Without ``cron`` this is a plain proxy to ``app.task()`` — no monitoring.
+    The check-in is performed by the worker-wide middleware when
+    installed (see :func:`install_middleware`), or by a per-task
+    fallback middleware otherwise — never both.
+
+    Without ``cron`` this is a plain proxy to ``app.task()`` — no
+    monitoring.
+
+    For distributed tracing of task executions, also install
+    :func:`sentry_worker_middleware` on the worker (done automatically
+    by :func:`install_middleware`).
 
     Examples
     --------
@@ -81,10 +396,8 @@ def procrastinate_task(
 
     >>> from whealth import procrastinate_task
     >>> from whealth.procrastinate import ProcrastinateCron
-    >>> from procrastinate.contrib.django import procrastinate_app as app
 
     >>> @procrastinate_task(
-    ...     app=app,
     ...     cron=ProcrastinateCron(expression="*/5 * * * *"),
     ...     queue="default",
     ... )
@@ -94,7 +407,6 @@ def procrastinate_task(
     **Async periodic task (health-checked):**
 
     >>> @procrastinate_task(
-    ...     app=app,
     ...     cron=ProcrastinateCron(expression="0 * * * *", timezone="US/Eastern"),
     ...     queue="default",
     ... )
@@ -103,15 +415,17 @@ def procrastinate_task(
 
     **One-shot task (no monitoring):**
 
-    >>> @procrastinate_task(app=app, queue="default")
+    >>> @procrastinate_task(queue="default")
     ... def send_email(user_id: int) -> None:
     ...     _send(user_id)
 
     Parameters
     ----------
     app
-        Procrastinate app instance (typically
-        ``procrastinate.contrib.django.procrastinate_app``).
+        Procrastinate app instance.  Defaults to the Django-managed app
+        (``procrastinate.contrib.django.app``), which is the right thing
+        in a Django project — only pass an app explicitly for a
+        hand-built (non-Django) Procrastinate app.
     cron
         Optional cron configuration. When set the task is registered as
         periodic and each run goes through the Sentry check-in lifecycle.
@@ -119,77 +433,31 @@ def procrastinate_task(
         Extra keyword arguments forwarded to ``app.task()``
         (e.g. ``queue``, ``name``).
     """
+    if app is None:
+        # Deferred import: whealth must stay importable without Django's
+        # procrastinate contrib.  The contrib `app` is a proxy that is
+        # safe to import at any time — task registration through it is
+        # buffered until the Django app is ready.
+        from procrastinate.contrib.django import app as django_app
+
+        app = django_app
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         if cron is None:
             return app.task(**task_kwargs)(func)  # type: ignore[no-any-return]
 
-        is_async = inspect.iscoroutinefunction(func)
+        fallback = (
+            _fallback_checkin_async
+            if inspect.iscoroutinefunction(func)
+            else _fallback_checkin_sync
+        )
+        existing = list(task_kwargs.pop("task_middleware", None) or [])
 
-        if is_async:
-
-            @wraps(func)
-            @task_trace(name=func.__name__)
-            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                close_old_connections()
-                reset_queries()
-                try:
-                    receipt = get_checkin_manager().check_in(
-                        slug=slug,
-                        schedule=CrontabSchedule(expression=cron.expression),
-                        timezone=cron.timezone,
-                        checkin_margin=cron.checkin_margin,
-                        max_runtime=cron.max_runtime,
-                        failure_issue_threshold=cron.failure_issue_threshold,
-                        recovery_threshold=cron.recovery_threshold,
-                    )
-                    failed = False
-                    try:
-                        return await func(*args, **kwargs)
-                    except Exception:
-                        failed = True
-                        raise
-                    finally:
-                        get_checkin_manager().check_out(receipt, failed=failed)
-                finally:
-                    close_old_connections()
-                    reset_queries()
-
-            wrapper: Callable[..., Any] = async_wrapper
-
-        else:
-
-            @wraps(func)
-            @task_trace(name=func.__name__)
-            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                close_old_connections()
-                reset_queries()
-                try:
-                    receipt = get_checkin_manager().check_in(
-                        slug=slug,
-                        schedule=CrontabSchedule(expression=cron.expression),
-                        timezone=cron.timezone,
-                        checkin_margin=cron.checkin_margin,
-                        max_runtime=cron.max_runtime,
-                        failure_issue_threshold=cron.failure_issue_threshold,
-                        recovery_threshold=cron.recovery_threshold,
-                    )
-                    failed = False
-                    try:
-                        return func(*args, **kwargs)
-                    except Exception:
-                        failed = True
-                        raise
-                    finally:
-                        get_checkin_manager().check_out(receipt, failed=failed)
-                finally:
-                    close_old_connections()
-                    reset_queries()
-
-            wrapper = sync_wrapper
-
-        task = app.task(**task_kwargs)(wrapper)
-        slug = task.name
+        task = app.task(
+            task_middleware=[fallback, *existing],
+            **task_kwargs,
+        )(func)
+        _cron_configs[task.name] = cron
         app.periodic(cron=cron.expression)(task)
         return task  # type: ignore[no-any-return]
 

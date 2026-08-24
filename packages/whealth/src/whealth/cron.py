@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field
 from queue import Queue, ShutDown
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from datetime import datetime, timedelta
@@ -15,6 +16,27 @@ from django.db import close_old_connections
 from django.utils.timezone import now as django_now
 
 from whealth.auto_sentry import capture_checkin, capture_exception
+
+_MONITOR_SLUG_MAX_LENGTH = 50
+"""Maximum length of a Sentry monitor slug."""
+
+_MONITOR_SLUG_INVALID = re.compile(r"[^a-zA-Z0-9_-]+")
+"""Characters not allowed in a Sentry monitor slug."""
+
+
+def monitor_slug(slug: str) -> str:
+    """Normalize an arbitrary slug into a valid Sentry monitor slug.
+
+    Sentry monitor slugs only accept ``[a-zA-Z0-9_-]`` and are capped at
+    50 characters.  Task names (e.g. ``myapp.tasks.my_task``) contain
+    dots, so they must be normalized before being sent to Sentry —
+    otherwise the check-ins are silently dropped.
+
+    When truncation is needed, the *end* of the slug is kept since it
+    carries the task name (the most identifying part).
+    """
+    normalized = _MONITOR_SLUG_INVALID.sub("-", slug).strip("-")
+    return normalized[-_MONITOR_SLUG_MAX_LENGTH:].strip("-")
 
 
 @dataclass(frozen=True)
@@ -61,6 +83,8 @@ class CheckedIn:
     checkin_id: uuid.UUID
     slug: str
     sentry_id: str
+    started_at: datetime | None = None
+    monitor_config: dict[str, Any] | None = None
 
 
 @dataclass
@@ -131,13 +155,34 @@ class CheckinManager:
     ) -> CheckedIn:
         """Record the start of a check-in in the DB and in Sentry.
 
+        The Sentry check-in carries the full monitor configuration
+        (schedule, margin, runtime, thresholds) so the monitor is
+        created/updated automatically on Sentry's side ("upserted"
+        monitors) — no manual monitor setup is needed.
+
         Returns a :class:`CheckedIn` receipt that must be passed to
         :meth:`check_out`.
         """
         checkin_id = uuid.uuid4()
         now = django_now()
 
-        sentry_id = capture_checkin(monitor_slug=slug, status="in_progress") or ""
+        monitor_config = {
+            "schedule": {"type": "crontab", "value": schedule.expression},
+            "timezone": timezone,
+            "checkin_margin": max(1, int(checkin_margin.total_seconds() // 60)),
+            "max_runtime": max(1, int(max_runtime.total_seconds() // 60)),
+            "failure_issue_threshold": failure_issue_threshold,
+            "recovery_threshold": recovery_threshold,
+        }
+
+        sentry_id = (
+            capture_checkin(
+                monitor_slug=monitor_slug(slug),
+                status="in_progress",
+                monitor_config=monitor_config,
+            )
+            or ""
+        )
 
         self.queue.put_nowait(
             CheckInStart(
@@ -153,7 +198,13 @@ class CheckinManager:
             )
         )
 
-        return CheckedIn(checkin_id=checkin_id, slug=slug, sentry_id=sentry_id)
+        return CheckedIn(
+            checkin_id=checkin_id,
+            slug=slug,
+            sentry_id=sentry_id,
+            started_at=now,
+            monitor_config=monitor_config,
+        )
 
     def check_out(
         self,
@@ -161,13 +212,25 @@ class CheckinManager:
         *,
         failed: bool = False,
     ) -> None:
-        """Finalise a check-in — update Sentry and enqueue the DB write."""
+        """Finalise a check-in — update Sentry and enqueue the DB write.
+
+        Closes the *same* Sentry check-in that was opened by
+        :meth:`check_in` (via its ``check_in_id``) and reports the
+        wall-clock duration of the run.
+        """
         now = django_now()
         status = "error" if failed else "ok"
+        duration = (
+            (now - receipt.started_at).total_seconds()
+            if receipt.started_at is not None
+            else None
+        )
         capture_checkin(
-            monitor_slug=receipt.slug,
+            monitor_slug=monitor_slug(receipt.slug),
             status=status,
             check_in_id=receipt.sentry_id or None,
+            duration=duration,
+            monitor_config=receipt.monitor_config,
         )
 
         self.queue.put_nowait(

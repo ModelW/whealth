@@ -557,37 +557,25 @@ class ControlRegistry:
             slug = controller.slug
             if slug not in known_slugs:
                 continue
+
+            values = {
+                "title": controller.title,
+                "app_label": controller.app_label,
+                "description": controller.info.readme,
+                "impact": controller.impact,
+            }
+
             if slug in existing:
                 row = existing[slug]
                 dirty = False
-                title = controller.title
-                app_label = controller.app_label
-                description = controller.info.readme
-                if row.title != title:
-                    row.title = title
-                    dirty = True
-                if row.app_label != app_label:
-                    row.app_label = app_label
-                    dirty = True
-                if row.description != description:
-                    row.description = description
-                    dirty = True
-                if row.impact != controller.impact:
-                    row.impact = controller.impact
-                    dirty = True
+                for field, value in values.items():
+                    if getattr(row, field) != value:
+                        setattr(row, field, value)
+                        dirty = True
                 if dirty:
                     scalar_updates.append(row)
             else:
-                creates.append(
-                    ControlModel(
-                        slug=slug,
-                        title=controller.title,
-                        app_label=controller.app_label,
-                        description=controller.info.readme,
-                        active=True,
-                        impact=controller.impact,
-                    )
-                )
+                creates.append(ControlModel(slug=slug, active=True, **values))
 
         if creates:
             ControlModel.objects.bulk_create(creates)
