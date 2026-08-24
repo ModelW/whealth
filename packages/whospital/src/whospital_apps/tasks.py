@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from procrastinate.contrib.django import app
 from whealth.procrastinate import ProcrastinateCron, procrastinate_task
 
 
 @procrastinate_task(
-    app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
 )
 def my_cron_task(timestamp: int) -> None:
@@ -20,7 +18,6 @@ def my_cron_task(timestamp: int) -> None:
 
 
 @procrastinate_task(
-    app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
 )
 def sync_success(timestamp: int) -> None:
@@ -28,7 +25,6 @@ def sync_success(timestamp: int) -> None:
 
 
 @procrastinate_task(
-    app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
 )
 def sync_fail(timestamp: int) -> None:
@@ -38,7 +34,6 @@ def sync_fail(timestamp: int) -> None:
 
 
 @procrastinate_task(
-    app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
 )
 async def async_success(timestamp: int) -> None:
@@ -46,7 +41,6 @@ async def async_success(timestamp: int) -> None:
 
 
 @procrastinate_task(
-    app=app,
     cron=ProcrastinateCron(expression="*/5 * * * *"),
 )
 async def async_fail(timestamp: int) -> None:
@@ -55,7 +49,7 @@ async def async_fail(timestamp: int) -> None:
     raise ValueError(msg)
 
 
-@procrastinate_task(app=app)
+@procrastinate_task()
 def sync_traced(timestamp: int) -> None:
     """Test task: sync, opens a Sentry span in its body."""
     from whealth.auto_sentry import start_span
@@ -64,7 +58,7 @@ def sync_traced(timestamp: int) -> None:
         pass
 
 
-@procrastinate_task(app=app)
+@procrastinate_task()
 async def async_traced(timestamp: int) -> None:
     """Test task: async, opens a Sentry span in its body."""
     from whealth.auto_sentry import start_span

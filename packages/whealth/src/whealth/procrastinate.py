@@ -339,7 +339,7 @@ def on_app_ready(app: Any) -> None:
 
 
 def procrastinate_task(
-    app: Any,
+    app: Any = None,
     cron: ProcrastinateCron | None = None,
     **task_kwargs: Any,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -367,10 +367,8 @@ def procrastinate_task(
 
     >>> from whealth import procrastinate_task
     >>> from whealth.procrastinate import ProcrastinateCron
-    >>> from procrastinate.contrib.django import procrastinate_app as app
 
     >>> @procrastinate_task(
-    ...     app=app,
     ...     cron=ProcrastinateCron(expression="*/5 * * * *"),
     ...     queue="default",
     ... )
@@ -380,7 +378,6 @@ def procrastinate_task(
     **Async periodic task (health-checked):**
 
     >>> @procrastinate_task(
-    ...     app=app,
     ...     cron=ProcrastinateCron(expression="0 * * * *", timezone="US/Eastern"),
     ...     queue="default",
     ... )
@@ -389,15 +386,17 @@ def procrastinate_task(
 
     **One-shot task (no monitoring):**
 
-    >>> @procrastinate_task(app=app, queue="default")
+    >>> @procrastinate_task(queue="default")
     ... def send_email(user_id: int) -> None:
     ...     _send(user_id)
 
     Parameters
     ----------
     app
-        Procrastinate app instance (typically
-        ``procrastinate.contrib.django.procrastinate_app``).
+        Procrastinate app instance.  Defaults to the Django-managed app
+        (``procrastinate.contrib.django.app``), which is the right thing
+        in a Django project — only pass an app explicitly for a
+        hand-built (non-Django) Procrastinate app.
     cron
         Optional cron configuration. When set the task is registered as
         periodic and each run goes through the Sentry check-in lifecycle.
@@ -405,6 +404,14 @@ def procrastinate_task(
         Extra keyword arguments forwarded to ``app.task()``
         (e.g. ``queue``, ``name``).
     """
+    if app is None:
+        # Deferred import: whealth must stay importable without Django's
+        # procrastinate contrib.  The contrib `app` is a proxy that is
+        # safe to import at any time — task registration through it is
+        # buffered until the Django app is ready.
+        from procrastinate.contrib.django import app as django_app
+
+        app = django_app
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         if cron is None:
