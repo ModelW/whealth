@@ -42,6 +42,46 @@ class Control(BaseControl):
         """Run the check. Raise on failure, return on success."""
 ```
 
+## Meta Controls
+
+A control can be declared as **manifest-only** by setting `meta: true` in its
+manifest. Meta controls have no Python check of their own — they bundle a set
+of dependencies under a single name (e.g. "the website works"):
+
+```
+yourapp/
+├── controls/
+│   └── website_works/
+│       ├── __init__.py      # Empty — no Control class allowed
+│       ├── README.md        # Documents what the bundle means
+│       └── manifest.yaml    # meta: true + depends_on
+```
+
+```yaml
+meta: true
+depends_on:
+    - database
+    - yourapp.frontend
+```
+
+Rules and semantics:
+
+- The `__init__.py` must exist (the package has to be importable) but must
+  NOT contain a `BaseControl` subclass — declaring `meta: true` alongside a
+  Python check is a validation error.
+- `depends_on` must be non-empty: a meta control with no dependencies would
+  check nothing at all, so discovery rejects it.
+- A `README.md` is still required; it documents what the bundle means.
+- The control itself always passes. Its meaningful signal is the **deep**
+  status: `GET /control/<app>/<slug>/deep.json` returns 200 when every
+  transitive dependency is healthy and 418 otherwise — which makes meta
+  controls ideal readiness-probe targets.
+- Meta controls default to `is_ignorable: false` (ignoring a pure bundle is
+  meaningless); an explicit `is_ignorable: true` still wins.
+- Controls depending *on* a meta control only see the meta's own (always
+  green) result — upstream failures do not propagate through it to shallow
+  dependents.
+
 ## Discoverability
 
 **TODO**: Control auto-discovery is not yet implemented.

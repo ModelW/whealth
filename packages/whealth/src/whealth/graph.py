@@ -109,6 +109,7 @@ def resolve_dependencies(
             title=c.manifest.title,
             is_ignorable=c.manifest.is_ignorable,
             impact=c.manifest.impact,
+            meta=c.manifest.meta,
         )
         safe_controls.append(
             ControlInfo(

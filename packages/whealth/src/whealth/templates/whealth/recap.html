@@ -56,7 +56,7 @@
       <tr>
         <td>{{ row.app_label }}</td>
         <td>{{ row.slug }}</td>
-        <td>{{ row.controller.title }}</td>
+        <td>{{ row.controller.title }}{% if row.controller.is_meta %} <span class="meta-badge">meta</span>{% endif %}</td>
         <td class="{{ row.result|run_status }}">
           {% if row.result|run_status == "pass" %}
             pass

@@ -21,7 +21,7 @@
 - Venv setup: `uv sync --all-packages --all-extras` (plain `uv sync` strips
   extras like sentry-sdk and breaks whospital tests).
 - Always: redirect output to a temp file; silent on success; dump failures only.
-- Last measured: 2026-08-24, whospital 104 tests in 14s, whealth 7 in 3s.
+- Last measured: 2026-08-24, whospital 111 tests in 14s, whealth 7 in 3s.
 
 # How to Git commit
 

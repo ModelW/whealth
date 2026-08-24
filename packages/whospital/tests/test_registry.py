@@ -111,9 +111,20 @@ def test_nonexistent_module() -> None:
     assert "Cannot import module" in error
 
 
-def test_module_without_control() -> None:
-    """A module with no BaseControl subclass returns an error string."""
-    error = attempt_load("whealth.base", app_label="whealth")
+@pytest.mark.control(
+    manifest="depends_on: []\n",
+    readme="# fine\n",
+    control_class="",
+)
+def test_module_without_control(tmp_control: str) -> None:
+    """A non-meta module with no BaseControl subclass returns an error string.
+
+    The manifest is validated before class extraction (the meta flag
+    decides whether a class is required), so the module needs a valid
+    manifest for the class check to be reached.
+    """
+    error = attempt_load(tmp_control, app_label="test")
+    assert isinstance(error, str)
     assert "contains no BaseControl subclass" in error
 
 
@@ -157,6 +168,75 @@ def test_missing_readme(tmp_control: str) -> None:
     """A control without README.md returns an error string."""
     error = attempt_load(tmp_control, app_label="test")
     assert "missing README.md" in error
+
+
+@pytest.mark.control(
+    manifest="meta: true\ndepends_on:\n  - whealth.database\n",
+    readme="# The website works\n",
+    control_class="",
+)
+def test_valid_meta_control(tmp_control: str) -> None:
+    """A meta control with an empty __init__.py and deps loads successfully."""
+    info = attempt_load(tmp_control, app_label="test")
+    assert isinstance(info, ControlInfo)
+    assert info.control_class is None
+    assert info.manifest.meta is True
+    assert info.manifest.depends_on == ("whealth.database",)
+    # Meta controls default to non-ignorable, so no whealth.database
+    # auto-append happened (it was already declared explicitly anyway).
+    assert info.manifest.is_ignorable is False
+
+
+@pytest.mark.control(
+    manifest="meta: true\nis_ignorable: true\ndepends_on:\n  - some_dep\n",
+    readme="# fine\n",
+    control_class="",
+)
+def test_meta_control_explicit_ignorable_override(tmp_control: str) -> None:
+    """An explicit is_ignorable: true on a meta control wins over the default."""
+    info = attempt_load(tmp_control, app_label="test")
+    assert isinstance(info, ControlInfo)
+    assert info.manifest.is_ignorable is True
+    # Ignorable controls auto-depend on the database for the ignore lookup.
+    assert "whealth.database" in info.manifest.depends_on
+
+
+@pytest.mark.control(
+    manifest="meta: true\ndepends_on:\n  - some_dep\n",
+    readme="# fine\n",
+)
+def test_meta_control_with_class_is_error(tmp_control: str) -> None:
+    """A meta control that also ships a BaseControl subclass is rejected."""
+    error = attempt_load(tmp_control, app_label="test")
+    assert isinstance(error, str)
+    assert "meta: true but contains a BaseControl subclass" in error
+
+
+@pytest.mark.control(
+    manifest="meta: true\ndepends_on: []\n",
+    readme="# fine\n",
+    control_class="",
+)
+def test_meta_control_empty_deps_is_error(tmp_control: str) -> None:
+    """A meta control with no declared dependencies is rejected."""
+    error = attempt_load(tmp_control, app_label="test")
+    assert isinstance(error, str)
+    assert "meta: true but has no depends_on entries" in error
+
+
+@pytest.mark.control(
+    manifest="meta: true\ndepends_on:\n  - some_dep\n",
+    readme="# fine\n",
+    control_class="",
+)
+def test_meta_flag_survives_graph_resolution(tmp_control: str) -> None:
+    """resolve_dependencies rebuilds manifests without dropping the meta flag."""
+    info = attempt_load(tmp_control, app_label="test")
+    assert isinstance(info, ControlInfo)
+
+    safe, _ = resolve_dependencies([info])
+    assert safe[0].manifest.meta is True
+    assert safe[0].control_class is None
 
 
 def test_list_potential_controls() -> None:
