@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import sys
 from io import StringIO
 
-import pytest
 from whealth.printing import print_json
 
 SAMPLE = {"a": 1, "b": [2, 3]}
@@ -37,16 +35,30 @@ def test_rich_force_true() -> None:
     assert "a" in result
 
 
-def test_rich_auto_on_tty() -> None:
-    """Auto-detect uses rich when the output stream is a TTY."""
-    # sys.stdout is a TTY in most test environments — verify or skip.
-    if not sys.stdout.isatty():
-        pytest.skip("stdout is not a TTY")
+class _TtyStringIO(StringIO):
+    """A StringIO that pretends to be a terminal.
 
+    Lets the auto-detection branch of ``print_json`` be tested without a
+    real TTY (unavailable under pytest/CI, where stdout is a pipe).
+    """
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_rich_auto_on_tty() -> None:
+    """Auto-detect uses rich when the output stream reports being a TTY."""
+    buf = _TtyStringIO()
+    print_json(SAMPLE, file=buf)
+    assert "\x1b[" in buf.getvalue()
+
+
+def test_rich_auto_on_non_tty() -> None:
+    """Auto-detect stays plain when the output stream is not a TTY."""
     buf = StringIO()
     print_json(SAMPLE, file=buf)
-    # StringIO is not a TTY, so rich should NOT be used.
     assert "\x1b[" not in buf.getvalue()
+    assert buf.getvalue().rstrip("\n") == PLAIN
 
 
 def test_defaults_to_stdout() -> None:
