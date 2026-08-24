@@ -53,3 +53,21 @@ async def async_fail(timestamp: int) -> None:
     """Test task: async, raises."""
     msg = "async failure"
     raise ValueError(msg)
+
+
+@procrastinate_task(app=app)
+def sync_traced(timestamp: int) -> None:
+    """Test task: sync, opens a Sentry span in its body."""
+    from whealth.auto_sentry import start_span
+
+    with start_span(op="test.inner", name="inner-sync"):
+        pass
+
+
+@procrastinate_task(app=app)
+async def async_traced(timestamp: int) -> None:
+    """Test task: async, opens a Sentry span in its body."""
+    from whealth.auto_sentry import start_span
+
+    with start_span(op="test.inner", name="inner-async"):
+        pass

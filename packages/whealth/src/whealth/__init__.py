@@ -9,7 +9,12 @@ from whealth.base import (
     RestartRemediation,
     SuggestionRemediation,
 )
-from whealth.procrastinate import ProcrastinateCron, procrastinate_task
+from whealth.procrastinate import (
+    ProcrastinateCron,
+    install_middleware,
+    procrastinate_task,
+    sentry_worker_middleware,
+)
 from whealth.registry import Controller
 
 __all__ = [
@@ -22,5 +27,7 @@ __all__ = [
     "Remediation",
     "RestartRemediation",
     "SuggestionRemediation",
+    "install_middleware",
     "procrastinate_task",
+    "sentry_worker_middleware",
 ]

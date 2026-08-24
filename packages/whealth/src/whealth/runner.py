@@ -119,10 +119,13 @@ class ControlRunner:
             self._save_run(start, end)
 
     def _run(self) -> tuple[datetime.datetime, datetime.datetime]:
+        from whealth.auto_sentry import start_span
+
         start = timezone.now()
 
-        for controller in self.registry.get_sorted_controls():
-            self._run_one_control(controller)
+        with start_span(op="whealth.run", name="Run health controls"):
+            for controller in self.registry.get_sorted_controls():
+                self._run_one_control(controller)
 
         end = timezone.now()
 
@@ -135,37 +138,48 @@ class ControlRunner:
 
         - To ignore it if dependencies failed
         - And to drop ignored failures if the control is ignorable
+
+        Each control gets its own Sentry span (a no-op without the SDK)
+        annotated with the control's outcome.
         """
-        from whealth.auto_sentry import capture_exception
+        from whealth.auto_sentry import capture_exception, start_span
 
-        try:
-            failures = controller.get_failures()
-        except Exception as exc:
-            capture_exception(exc)
-            failures = [
-                Failure(
-                    key=controller.slug,
-                    outcome="internal_error",
-                    context={"exception": str(exc)},
-                )
-            ]
+        label = f"{controller.app_label}.{controller.slug}"
 
-        for dependency in controller.depends_on:
-            match self.results[dependency]:
-                case False:
-                    self.results[controller.key] = False
-                    return
-                case list(dep_failures):
-                    if any(
-                        f.outcome in ("error", "internal_error") for f in dep_failures
-                    ):
+        with start_span(op="whealth.control", name=label) as span:
+            try:
+                failures = controller.get_failures()
+            except Exception as exc:
+                capture_exception(exc)
+                failures = [
+                    Failure(
+                        key=controller.slug,
+                        outcome="internal_error",
+                        context={"exception": str(exc)},
+                    )
+                ]
+
+            for dependency in controller.depends_on:
+                match self.results[dependency]:
+                    case False:
+                        span.set_data("whealth.status", "blocked")
                         self.results[controller.key] = False
                         return
+                    case list(dep_failures):
+                        if any(
+                            f.outcome in ("error", "internal_error")
+                            for f in dep_failures
+                        ):
+                            span.set_data("whealth.status", "blocked")
+                            self.results[controller.key] = False
+                            return
 
-        if controller.is_ignorable:
-            failures = self._drop_ignored(controller.key, failures)
+            if controller.is_ignorable:
+                failures = self._drop_ignored(controller.key, failures)
 
-        self.results[controller.key] = failures
+            span.set_data("whealth.status", "fail" if failures else "pass")
+            span.set_data("whealth.failures", len(failures))
+            self.results[controller.key] = failures
 
     def _drop_ignored(
         self, control_id: tuple[str, str], failures: list[Failure]
